@@ -1,0 +1,1324 @@
+import json
+import os
+import subprocess
+import sys
+import unicodedata
+from datetime import datetime
+from pathlib import Path
+from time import sleep
+
+import pandas as pd
+from PyQt6.QtCore import *
+from PyQt6.QtGui import *
+from PyQt6.QtWidgets import *
+
+# Verifica se Playwright está instalado
+try:
+    from playwright.sync_api import TimeoutError, sync_playwright
+except ImportError:
+    print("📦 Playwright não encontrado. Instalando automaticamente...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
+    print("✅ Playwright instalado. Instalando navegadores...")
+    subprocess.check_call([sys.executable, "-m", "playwright", "install"])
+
+# ===========================================================
+# 📁 MÓDULO DE WEBSCRAPING
+# ===========================================================
+
+
+class WebScraperWorker(QThread):
+    progress = pyqtSignal(int)
+    message = pyqtSignal(str)
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    data_saved = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.csv_path = ""
+        self.mode = 1  # 1=Draft, 2=Medição, 3=ID Cancelados, 4=Memória de Cálculo
+        self.auth_file = "auth.json"
+        self.login_url = "https://devopsredes.vivo.com.br/ospcontrol/home"
+        self.logged_selector = 'xpath=//*[@id="ott-username"]'
+        self.username = ""
+        self.password = ""
+        self.download_path = Path.home() / "Downloads"
+        self._running = True
+
+    def _normalize_text(self, s: str) -> str:
+        """Normaliza texto para comparação"""
+        if not s:
+            return ""
+        s = " ".join(s.split())
+        s_norm = (
+            unicodedata.normalize("NFKD", s)
+            .encode("ASCII", "ignore")
+            .decode("ASCII")
+            .lower()
+        )
+        return s_norm
+
+    def _determinar_tipo_registro(self, categoria, unidade="", descricao=""):
+        """Determina o tipo de registro baseado na categoria, unidade e descrição"""
+        cat_norm = self._normalize_text(categoria)
+
+        if any(x in cat_norm for x in ("material", "materiais", "telefonica")):
+            return "Material"
+        elif any(x in cat_norm for x in ("custo", "custos")):
+            return "Custo"
+        elif any(x in cat_norm for x in ("servico", "servicos", "classe", "valor")):
+            return "Serviço"
+        else:
+            unidade_lower = unidade.lower() if unidade else ""
+            descricao_lower = descricao.lower() if descricao else ""
+
+            if any(k in unidade_lower for k in ("m", "u", "cj", "un", "metro", "kg")):
+                return "Material"
+            elif any(
+                k in descricao_lower
+                for k in (
+                    "cfo",
+                    "chassi",
+                    "conj",
+                    "subduto",
+                    "material",
+                    "cabos",
+                    "fibra",
+                )
+            ):
+                return "Material"
+            else:
+                return "Serviço"
+
+    def _extrair_categoria_tabela(self, tabela):
+        """Extrai a categoria da tabela"""
+        try:
+            categoria = tabela.evaluate("""
+                el => {
+                    function findPrevText(e){
+                        let node = e.previousElementSibling;
+                        while(node){
+                            const txt = node.innerText ? node.innerText.trim() : '';
+                            if(txt) return txt.replace(/\\s+/g,' ');
+                            node = node.previousElementSibling;
+                        }
+                        let parent = e.parentElement;
+                        while(parent){
+                            let prev = parent.previousElementSibling;
+                            while(prev){
+                                const txt = prev.innerText ? prev.innerText.trim() : '';
+                                if(txt) return txt.replace(/\\s+/g,' ');
+                                prev = prev.previousElementSibling;
+                            }
+                            parent = parent.parentElement;
+                        }
+                        return '';
+                    }
+                    return findPrevText(el);
+                }
+            """)
+
+            if not isinstance(categoria, str):
+                categoria = "" if categoria is None else str(categoria)
+
+            categoria = " ".join(categoria.split())
+            return categoria
+
+        except Exception as e:
+            self.message.emit(f"⚠️ Erro ao extrair categoria: {e}")
+            return ""
+
+    def _extrair_status_id(self, page, id_value):
+        """Extrai o status do ID na tela de busca, antes de editar."""
+        try:
+            # Espera a tabela de resultados aparecer
+            # Usa um seletor mais genérico para garantir que encontre a tabela mesmo se o ID do painel mudar
+            page.wait_for_selector("table tbody tr", timeout=8000)
+
+            # Tenta localizar a tabela correta (prefere a visível/ativa)
+            tabela = page.locator("table").first
+            if page.locator(".tab-pane.active table").count() > 0:
+                tabela = page.locator(".tab-pane.active table").first
+
+            # Encontra o índice da coluna "Status" pelo cabeçalho para ser mais robusto
+            headers = tabela.locator("thead th").all()
+            status_index = -1
+            for i, header in enumerate(headers):
+                header_text = self._normalize_text(header.text_content())
+                if "status" in header_text or "situacao" in header_text:
+                    status_index = i
+                    break
+
+            if status_index == -1:
+                # Fallback para o método antigo se o cabeçalho "Status" não for encontrado.
+                self.message.emit(
+                    f"⚠️ ID {id_value}: Cabeçalho 'Status' não encontrado, tentando coluna 13."
+                )
+                status_locator = tabela.locator("tbody tr:first-child td:nth-child(13)")
+            else:
+                # Usa o índice da coluna "Status" para pegar o dado correto.
+                col_index = status_index + 1
+                status_locator = tabela.locator(
+                    f"tbody tr:first-child td:nth-child({col_index})"
+                )
+
+            if status_locator.count() > 0:
+                status = status_locator.text_content().strip()
+            else:
+                status = "CÉLULA VAZIA/NÃO ENCONTRADA"
+
+            self.message.emit(f"ℹ️ ID {id_value}: Status encontrado: '{status}'")
+            return status
+        except Exception as e:
+            self.message.emit(f"⚠️ Erro ao ler status para ID {id_value}: {e}")
+            return "STATUS NÃO ENCONTRADO"
+
+    def _scrap_memoria_calculo(self, page, id_value):
+        """Extrai todos os dados da memória de cálculo com paginação"""
+        try:
+            # 1. Navegação inicial
+            sleep(2)
+            page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
+            sleep(2)
+            page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
+            sleep(2)
+            page.fill('xpath=//*[@id="filtroId"]', str(id_value))
+            sleep(2)
+            page.locator(
+                "a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')"
+            ).click()
+            sleep(2)
+
+            # Extrai o status antes de clicar em editar
+            status = self._extrair_status_id(page, id_value)
+
+            try:
+                # Tenta clicar no botão "Editar"
+                page.locator("span.badge.bg-primary:has-text('Editar')").click(
+                    timeout=5000
+                )
+                sleep(2)
+            except TimeoutError:
+                # Se o botão não for encontrado, registra o status e retorna
+                self.message.emit(
+                    f"⚠️ ID {id_value}: Botão 'Editar' não encontrado. Status: '{status}'."
+                )
+                # Volta ao menu principal para o próximo ID
+                try:
+                    page.click('//*[@id="ott-sidebar-collapse"]')
+                    sleep(2)
+                    page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
+                    sleep(2)
+                except Exception as nav_error:
+                    self.message.emit(
+                        f"⚠️ Erro ao voltar ao menu para ID {id_value}: {nav_error}"
+                    )
+                return [[id_value, "", "", "", "", "", "", "", "", "", status]]
+
+            # 2. Clica em todos os serviços
+            serviços = page.locator('a[title="Serviços"]').all()
+            todos_dados = []
+
+            for servico_idx, servico in enumerate(serviços):
+                sleep(6)
+                servico.click()
+                sleep(6)
+
+                # 3. Tenta encontrar "Memória de Cálculo"
+                try:
+                    page.locator('//a[text()="Memória de Cálculo"]').click()
+                    sleep(3)
+                    self.message.emit(
+                        f"✅ ID {id_value}: Serviço {servico_idx + 1} - Memória de Cálculo"
+                    )
+                except:
+                    self.message.emit(
+                        f"⚠️ ID {id_value}: Serviço {servico_idx + 1} - Não encontrou Memória de Cálculo"
+                    )
+                    if len(serviços) > 1:
+                        page.go_back()
+                        sleep(5)
+                    continue
+
+                # 4. Tenta mostrar 50 itens
+                try:
+                    page.select_option("select.custom-select", label="50 itens")
+                    sleep(3)
+                    self.message.emit(f"📊 ID {id_value}: Selecionou '50 itens'")
+                except:
+                    self.message.emit(
+                        f"ℹ️ ID {id_value}: Sem select ou já está em 50 itens"
+                    )
+
+                # 5. EXTRAI TODAS AS PÁGINAS
+                pagina = 1
+                while True:
+                    self.message.emit(f"   📄 ID {id_value}: Página {pagina}")
+
+                    # Procura a tabela específica
+                    tabela = page.locator("table.ott-table-sm.ott-table-nowrap").first
+
+                    if tabela.count() > 0:
+                        # Extrai todas as linhas da tabela atual
+                        linhas = tabela.locator("tbody tr").all()
+
+                        for linha in linhas:
+                            # Pega todas as células da linha
+                            celulas = linha.locator("td").all()
+
+                            # Verifica se tem pelo menos 9 colunas
+                            if len(celulas) >= 9:
+                                # Extrai texto de cada célula
+                                valores = []
+                                for celula in celulas:
+                                    texto = celula.text_content().strip()
+                                    # Remove R$ dos valores monetários
+                                    if "R$" in texto:
+                                        texto = texto.replace("R$", "").strip()
+                                    valores.append(texto)
+
+                                # Garante que temos exatamente 9 valores
+                                while len(valores) < 9:
+                                    valores.append("")
+
+                                # Monta a linha completa: ID + 9 valores da tabela
+                                linha_completa = [id_value] + valores + [status]
+                                todos_dados.append(linha_completa)
+
+                        self.message.emit(
+                            f"   ✓ Extraiu {len(linhas)} linhas da página {pagina}"
+                        )
+                    else:
+                        self.message.emit(
+                            f"   ⚠️ Tabela não encontrada na página {pagina}"
+                        )
+                        # Tenta buscar por outra classe
+                        try:
+                            tabela_alt = page.locator("table.table-bordered").first
+                            if tabela_alt.count() > 0:
+                                linhas = tabela_alt.locator("tbody tr").all()
+                                for linha in linhas:
+                                    celulas = linha.locator("td").all()
+                                    if len(celulas) >= 9:
+                                        valores = [
+                                            c.text_content().strip().replace("R$", "")
+                                            for c in celulas
+                                        ]
+                                        while len(valores) < 9:
+                                            valores.append("")
+                                        todos_dados.append(
+                                            [id_value] + valores + [status]
+                                        )
+                                self.message.emit(
+                                    f"   ✓ Extraiu {len(linhas)} linhas (tabela alternativa)"
+                                )
+                        except:
+                            pass
+
+                    # 6. VERIFICA SE TEM PRÓXIMA PÁGINA
+                    tem_proxima = False
+                    try:
+                        next_btns = page.locator(
+                            '//li[not(contains(@class, "disabled"))]//a[@aria-label="Next"]'
+                        )
+
+                        for i in range(next_btns.count()):
+                            btn = next_btns.nth(i)
+                            if btn.is_visible():
+                                tem_proxima = True
+                                break
+                    except:
+                        tem_proxima = False
+
+                    # 7. SE NÃO TEM PRÓXIMA PÁGINA, PARA
+                    if not tem_proxima:
+                        self.message.emit(f"   🏁 Última página ({pagina})")
+                        break
+
+                    # 8. VAI PARA PRÓXIMA PÁGINA
+                    try:
+                        page.locator(
+                            '//li[not(contains(@class, "disabled"))]//a[@aria-label="Next"]'
+                        ).first.click()
+                        sleep(3)
+                        pagina += 1
+                    except Exception as e:
+                        self.message.emit(f"   ❌ Erro ao mudar página: {str(e)}")
+                        break
+
+                # 9. VOLTA PARA LISTA DE SERVIÇOS (se houver mais de um)
+                if len(serviços) > 1 and servico_idx < len(serviços) - 1:
+                    page.go_back()
+                    sleep(5)
+
+            # 10. VOLTA AO MENU PRINCIPAL
+            sleep(2)
+            page.click('//*[@id="ott-sidebar-collapse"]')
+            sleep(2)
+            page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
+            sleep(2)
+
+            self.message.emit(
+                f"✅ ID {id_value}: Finalizado - {len(todos_dados)} linhas extraídas"
+            )
+            return todos_dados
+
+        except Exception as e:
+            self.message.emit(f"❌ Erro no ID {id_value}: {str(e)}")
+
+            # Tenta limpar antes de sair
+            try:
+                page.click('//*[@id="ott-sidebar-collapse"]')
+                page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
+            except:
+                pass
+
+            return []
+
+    def run(self):
+        try:
+            self.message.emit("🔄 Iniciando web scraping...")
+            self._running = True
+
+            if not self.csv_path or not os.path.exists(self.csv_path):
+                self.error.emit("❌ Arquivo CSV não encontrado!")
+                return
+
+            # Ler CSV
+            self.message.emit("📋 Lendo arquivo CSV...")
+            df = pd.read_csv(self.csv_path, sep=";", encoding="utf-8")
+
+            # Executar no thread separado usando playwright
+            self._run_with_playwright(df)
+
+        except Exception as e:
+            self.error.emit(f"❌ Erro no processo: {str(e)}")
+        finally:
+            self.finished.emit()
+
+    def _run_with_playwright(self, df):
+        try:
+            from playwright.sync_api import sync_playwright
+
+            with sync_playwright() as p:
+                self.message.emit("🌐 Iniciando navegador...")
+                browser = p.chromium.launch(
+                    channel="chrome",
+                    headless=False,
+                    args=["--ignore-certificate-errors"],
+                )
+
+                # Verificar se há sessão salva
+                if os.path.exists(self.auth_file):
+                    self.message.emit("🔑 Carregando sessão existente...")
+                    context = browser.new_context(storage_state=self.auth_file)
+                else:
+                    self.message.emit("🆕 Criando nova sessão...")
+                    context = browser.new_context()
+
+                page = context.new_page()
+                page.goto(self.login_url, wait_until="networkidle")
+                self.message.emit("✅ Página carregada.")
+
+                # Verificar login
+                if not self._is_logged(page):
+                    self.message.emit("🔐 Sessão expirada. Aguardando login manual...")
+
+                    # Preencher usuário e senha se fornecidos
+                    if self.username and self.password:
+                        try:
+                            page.wait_for_selector(
+                                '//*[@id="username"]', state="visible", timeout=10000
+                            )
+                            page.fill('//*[@id="username"]', self.username)
+                            page.fill('//*[@id="password"]', self.password)
+                            self.message.emit(
+                                "✅ Usuário e senha preenchidos. Complete o CAPTCHA manualmente..."
+                            )
+                        except:
+                            self.message.emit(
+                                "ℹ️ Complete o login manualmente (CAPTCHA)..."
+                            )
+
+                    # Aguardar login manual
+                    page.wait_for_selector(
+                        self.logged_selector, timeout=180000, state="visible"
+                    )
+                    self.message.emit("✅ Login detectado! Salvando sessão...")
+                    context.storage_state(path=self.auth_file)
+                else:
+                    self.message.emit("✅ Já está logado!")
+
+                # Executar scraping baseado no modo
+                if self.mode == 1:
+                    self._scrap_draft(page, df)
+                elif self.mode == 2:
+                    self._scrap_medicao(page, df)
+                elif self.mode == 3:
+                    self._scrap_id_cancelado(page, df)
+                elif self.mode == 4:
+                    self._scrap_memoria_calculo_main(page, df)
+
+                browser.close()
+                self.message.emit("✅ Processo concluído!")
+
+        except Exception as e:
+            self.error.emit(f"❌ Erro no playwright: {str(e)}")
+
+    def _is_logged(self, page):
+        try:
+            page.wait_for_selector(self.logged_selector, timeout=5000)
+            return True
+        except:
+            return False
+
+    def _scrap_draft(self, page, df):
+        """Função de extração de Draft"""
+        self.message.emit("🧾 Iniciando extração de Draft...")
+        timestamp = datetime.now().strftime("%d-%m-%Y_%Hh%Mm%Ss")
+        arquivo = self.download_path / f"osp_vivo_draft_{timestamp}.xlsx"
+        colunas = [
+            "ID",
+            "TIPO DE REGISTRO",
+            "CÓDIGO",
+            "DESCRIÇÃO",
+            "QUANTIDADE",
+            "PREÇO UNITÁRIO",
+            "UNIDADE",
+            "PREÇO TOTAL",
+            "CATEGORIA",
+        ]
+        resultados = []
+
+        total_ids = len(df)
+        for idx, row in df.iterrows():
+            if not self._running:
+                break
+
+            id_value = int(row["ID"])
+            progress = int((idx + 1) / total_ids * 100)
+            self.progress.emit(progress)
+            self.message.emit(
+                f"📋 Processando ID {id_value} ({idx + 1}/{total_ids})..."
+            )
+
+            try:
+                dados = self._pesquisar_id_draft(page, id_value)
+                if dados:
+                    resultados.extend(dados)
+                    self.message.emit(
+                        f"✅ ID {id_value} extraído ({len(dados)} linhas)"
+                    )
+                else:
+                    self.message.emit(f"⚠️ Nenhum dado para ID {id_value}")
+            except Exception as e:
+                self.message.emit(f"❌ Erro no ID {id_value}: {str(e)}")
+
+            # Salvar incremental
+            try:
+                df_parcial = pd.DataFrame(resultados, columns=colunas)
+                df_parcial.to_excel(arquivo, index=False)
+                self.data_saved.emit(str(arquivo))
+            except Exception as e:
+                self.message.emit(f"⚠️ Erro ao salvar: {e}")
+
+        self.message.emit(f"✅ Arquivo final salvo: {arquivo}")
+
+    def _scrap_medicao(self, page, df):
+        """Função de extração de Medição"""
+        self.message.emit("📊 Iniciando extração de Medição...")
+        timestamp = datetime.now().strftime("%d-%m-%Y_%Hh%Mm%Ss")
+        arquivo = self.download_path / f"osp_vivo_medicao_{timestamp}.xlsx"
+        colunas = [
+            "ID",
+            "TIPO DE REGISTRO",
+            "CÓDIGO",
+            "DESCRIÇÃO",
+            "QUANTIDADE",
+            "PREÇO UNITÁRIO",
+            "UNIDADE",
+            "PREÇO TOTAL",
+            "CATEGORIA",
+        ]
+        resultados = []
+
+        total_ids = len(df)
+        for idx, row in df.iterrows():
+            if not self._running:
+                break
+
+            id_value = int(row["ID"])
+            progress = int((idx + 1) / total_ids * 100)
+            self.progress.emit(progress)
+            self.message.emit(
+                f"📋 Processando ID {id_value} ({idx + 1}/{total_ids})..."
+            )
+
+            try:
+                dados = self._pesquisar_id_medicao(page, id_value)
+                if dados:
+                    resultados.extend(dados)
+                    self.message.emit(
+                        f"✅ ID {id_value} extraído ({len(dados)} linhas)"
+                    )
+                else:
+                    self.message.emit(f"⚠️ Nenhum dado para ID {id_value}")
+            except Exception as e:
+                self.message.emit(f"❌ Erro no ID {id_value}: {str(e)}")
+
+            # Salvar incremental
+            try:
+                df_parcial = pd.DataFrame(resultados, columns=colunas)
+                df_parcial.to_excel(arquivo, index=False)
+                self.data_saved.emit(str(arquivo))
+            except Exception as e:
+                self.message.emit(f"⚠️ Erro ao salvar: {e}")
+
+        self.message.emit(f"✅ Arquivo final salvo: {arquivo}")
+
+    def _scrap_id_cancelado(self, page, df):
+        """Função de extração de ID Cancelados"""
+        self.message.emit("🔎 Iniciando extração de ID Cancelados...")
+        timestamp = datetime.now().strftime("%d-%m-%Y_%Hh%Mm%Ss")
+        arquivo = self.download_path / f"osp_id_cancelado_{timestamp}.xlsx"
+        colunas = ["ID", "CONTRATO", "OSP"]
+        resultados = []
+
+        total_ids = len(df)
+        for idx, row in df.iterrows():
+            if not self._running:
+                break
+
+            id_value = int(row["ID"])
+            progress = int((idx + 1) / total_ids * 100)
+            self.progress.emit(progress)
+            self.message.emit(
+                f"📋 Processando ID {id_value} ({idx + 1}/{total_ids})..."
+            )
+
+            try:
+                dados = self._pesquisar_id(page, id_value)
+                if dados:
+                    resultados.append(dados)
+                    self.message.emit(
+                        f"✅ ID {id_value}: Contrato='{dados[1]}', OSP='{dados[2]}'"
+                    )
+                else:
+                    resultados.append([id_value, "ERRO", "Nenhum dado retornado"])
+                    self.message.emit(f"⚠️ Nenhum dado para ID {id_value}")
+            except Exception as e:
+                resultados.append([id_value, "ERRO", str(e)])
+                self.message.emit(f"❌ Erro no ID {id_value}: {str(e)}")
+
+            # Salvar incremental
+            try:
+                df_parcial = pd.DataFrame(resultados, columns=colunas)
+                df_parcial.to_excel(arquivo, index=False)
+                self.data_saved.emit(str(arquivo))
+            except Exception as e:
+                self.message.emit(f"⚠️ Erro ao salvar: {e}")
+
+        self.message.emit(f"✅ Arquivo final salvo: {arquivo}")
+
+    def _scrap_memoria_calculo_main(self, page, df):
+        """Função principal que processa todos os IDs da memória de cálculo"""
+        self.message.emit("🧮 Iniciando extração de Memória de Cálculo...")
+
+        # Cria arquivo com timestamp
+        timestamp = datetime.now().strftime("%d-%m-%Y_%Hh%Mm%Ss")
+        arquivo = self.download_path / f"osp_memoria_calculo_{timestamp}.xlsx"
+
+        # Define colunas
+        colunas = [
+            "ID",
+            "CLASSE",
+            "CODIGO",
+            "DESCRIÇÃO DO SERVIÇO",
+            "UNIDADE",
+            "PONTOS",
+            "CUSTO UNITÁRIO (R$)",
+            "QUANTIDADE EXECUTADA",
+            "PONTOS TOTAIS",
+            "CUSTO TOTAL (R$)",
+            "STATUS",
+        ]
+
+        # Lista para todos os resultados
+        resultados = []
+        total_ids = len(df)
+
+        for idx, row in df.iterrows():
+            if not self._running:
+                break
+
+            id_value = int(row["ID"])
+            progress = int((idx + 1) / total_ids * 100)
+            self.progress.emit(progress)
+            self.message.emit(
+                f"🔍 Processando ID {id_value} ({idx + 1}/{total_ids})..."
+            )
+
+            # Chama a função de extração
+            dados_id = self._scrap_memoria_calculo(page, id_value)
+
+            # Adiciona à lista principal
+            if dados_id:
+                resultados.extend(dados_id)
+                self.message.emit(f"✅ ID {id_value}: Adicionou {len(dados_id)} linhas")
+            else:
+                # Adiciona linha vazia para manter o ID
+                resultados.append([id_value] + [""] * 10)
+                self.message.emit(f"⚠️ ID {id_value}: Nenhum dado")
+
+            # Salva incrementalmente
+            try:
+                if resultados:
+                    df_temp = pd.DataFrame(resultados, columns=colunas)
+                    df_temp.to_excel(arquivo, index=False)
+                    self.data_saved.emit(str(arquivo))
+            except Exception as e:
+                self.message.emit(f"⚠️ Erro ao salvar: {e}")
+
+        # Finaliza
+        self.message.emit(f"✅ Processo concluído! Total: {len(resultados)} linhas")
+        self.message.emit(f"💾 Arquivo salvo: {arquivo}")
+
+        return resultados
+
+    def _pesquisar_id(self, page, id_value):
+        try:
+            sleep(2)
+            page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
+            sleep(2)
+            page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
+            sleep(2)
+            page.fill('xpath=//*[@id="filtroId"]', str(id_value))
+            sleep(2)
+            page.locator(
+                "a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')"
+            ).click()
+            sleep(2)
+
+            page.locator("span.badge.bg-primary:has-text('Editar')").click()
+            sleep(2)
+
+            # Navega até aba "Medição"
+            links = page.locator("a.nav-link")
+            total = int(links.count())
+            for i in range(total):
+                texto = links.nth(i).text_content().strip()
+                if texto == "Medição":
+                    links.nth(i).click()
+                    break
+
+            sleep(3)
+
+            # Verifica botão Serviços
+            servicos_btn = page.locator('a[title="Serviços"]')
+            if servicos_btn.count() == 0:
+                return [id_value, "ERRO", "Botão serviço não encontrado"]
+
+            servicos_btn.click()
+            sleep(3)
+
+            # Extrai Contrato
+            contrato = (
+                page.locator(
+                    "xpath=/html/body/app-root/app-requisicoes-servicos/div/div/div/div/div[2]/div[2]/div/div/div[2]/div[2]/span"
+                )
+                .text_content()
+                .strip()
+            )
+            sleep(2)
+
+            # Extrai OSP
+            osp_locator = page.locator(
+                "xpath=/html/body/app-root/app-requisicoes-servicos/div/div/div/div/div[2]/div[3]/div/div[2]/div/strong"
+            )
+            osp = osp_locator.text_content().strip() if osp_locator.count() > 0 else ""
+
+            return [id_value, contrato, osp]
+
+        except Exception as e:
+            return [id_value, "ERRO", f"Erro: {str(e)}"]
+
+    def _pesquisar_id_draft(self, page, id_value):
+        try:
+            sleep(2)
+            page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
+            sleep(2)
+            page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
+            sleep(2)
+            page.fill('xpath=//*[@id="filtroId"]', str(id_value))
+            sleep(2)
+            page.locator(
+                "a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')"
+            ).click()
+            sleep(2)
+
+            page.locator("span.badge.bg-primary:has-text('Editar')").click()
+            sleep(2)
+
+            # Navega até aba "Draft"
+            links = page.locator("a.nav-link")
+            total = int(links.count())
+            for i in range(total):
+                texto = links.nth(i).text_content().strip()
+                if texto == "Draft":
+                    links.nth(i).click()
+                    break
+
+            sleep(3)
+            page.locator('a[title="Serviços"]').click()
+            sleep(2)
+
+            # Extração de tabelas com categoria correta
+            todos_dados = []
+            tabelas = page.query_selector_all("//table")
+
+            for tabela in tabelas:
+                # Extrai categoria da tabela
+                categoria = self._extrair_categoria_tabela(tabela)
+
+                # Extrai linhas da tabela
+                linhas = tabela.query_selector_all("tbody tr")
+                for linha in linhas:
+                    tds = linha.query_selector_all("td")
+                    valores = [td.inner_text().strip() for td in tds]
+
+                    if len(valores) >= 6:
+                        # Determina tipo de registro
+                        tipo_registro = self._determinar_tipo_registro(
+                            categoria,
+                            valores[4] if len(valores) > 4 else "",
+                            valores[1] if len(valores) > 1 else "",
+                        )
+
+                        # Monta a linha de dados
+                        dados_linha = [
+                            id_value,  # ID
+                            tipo_registro,  # TIPO DE REGISTRO
+                            valores[0],  # CÓDIGO
+                            valores[1],  # DESCRIÇÃO
+                            valores[2],  # QUANTIDADE
+                            valores[3],  # PREÇO UNITÁRIO
+                            valores[4] if len(valores) > 4 else "",  # UNIDADE
+                            valores[5] if len(valores) > 5 else "",  # PREÇO TOTAL
+                            categoria,  # CATEGORIA (extraída da página)
+                        ]
+                        todos_dados.append(dados_linha)
+
+            # Volta ao menu
+            sleep(2)
+            page.click('//*[@id="ott-sidebar-collapse"]')
+            sleep(2)
+            page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
+            sleep(2)
+
+            return todos_dados
+
+        except Exception as e:
+            self.message.emit(f"Erro ao pesquisar ID {id_value}: {e}")
+            return None
+
+    def _pesquisar_id_medicao(self, page, id_value):
+        try:
+            sleep(2)
+            page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
+            sleep(2)
+            page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
+            sleep(2)
+            page.fill('xpath=//*[@id="filtroId"]', str(id_value))
+            sleep(2)
+            page.locator(
+                "a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')"
+            ).click()
+            sleep(2)
+
+            page.locator("span.badge.bg-primary:has-text('Editar')").click()
+            sleep(2)
+
+            # Navega até aba "Medição"
+            links = page.locator("a.nav-link")
+            total = int(links.count())
+            for i in range(total):
+                texto = links.nth(i).text_content().strip()
+                if texto == "Medição":
+                    links.nth(i).click()
+                    break
+
+            sleep(5)
+
+            serviços = page.locator('a[title="Serviços"]').all()
+            todos_dados = []
+
+            for servico in serviços:
+                sleep(6)
+                servico.click()
+                sleep(5)
+
+                # Extração de tabelas com categoria correta
+                tabelas = page.query_selector_all("//table")
+                for tabela in tabelas:
+                    # Extrai categoria da tabela
+                    categoria = self._extrair_categoria_tabela(tabela)
+
+                    # Extrai linhas da tabela
+                    linhas = tabela.query_selector_all("tbody tr")
+                    for linha in linhas:
+                        tds = linha.query_selector_all("td")
+                        valores = [td.inner_text().strip() for td in tds]
+
+                        if len(valores) >= 6:
+                            # Determina tipo de registro
+                            tipo_registro = self._determinar_tipo_registro(
+                                categoria,
+                                valores[4] if len(valores) > 4 else "",
+                                valores[1] if len(valores) > 1 else "",
+                            )
+
+                            # Monta a linha de dados
+                            dados_linha = [
+                                id_value,  # ID
+                                tipo_registro,  # TIPO DE REGISTRO
+                                valores[0],  # CÓDIGO
+                                valores[1],  # DESCRIÇÃO
+                                valores[2],  # QUANTIDADE
+                                valores[3],  # PREÇO UNITÁRIO
+                                valores[4] if len(valores) > 4 else "",  # UNIDADE
+                                valores[5] if len(valores) > 5 else "",  # PREÇO TOTAL
+                                categoria,  # CATEGORIA (extraída da página)
+                            ]
+                            todos_dados.append(dados_linha)
+
+                if len(serviços) > 1:
+                    page.go_back()
+                    sleep(5)
+                    # Navega até aba "Medição" novamente
+                    links = page.locator("a.nav-link")
+                    total = int(links.count())
+                    for i in range(total):
+                        texto = links.nth(i).text_content().strip()
+                        if texto == "Medição":
+                            links.nth(i).click()
+                            break
+
+            # Volta ao menu
+            sleep(2)
+            page.click('//*[@id="ott-sidebar-collapse"]')
+            sleep(2)
+            page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
+            sleep(2)
+
+            return todos_dados
+
+        except Exception as e:
+            self.message.emit(f"Erro ao pesquisar ID {id_value}: {e}")
+            return None
+
+    def stop(self):
+        self._running = False
+
+
+# ===========================================================
+# 🎨 INTERFACE GRÁFICA
+# ===========================================================
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("OSP Vivo Web Scraper")
+        self.setGeometry(100, 100, 800, 600)
+        self.csv_path = ""
+        self.worker = None
+
+        self.setup_ui()
+        self.load_config()
+
+    def setup_ui(self):
+        # Widget central
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+
+        # Título
+        title_label = QLabel("🕸️ OSP Vivo Web Scraper")
+        title_label.setStyleSheet("font-size: 24px; font-weight: bold; padding: 10px;")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+
+        # Seção de configurações
+        config_group = QGroupBox("🔧 Configurações")
+        config_layout = QFormLayout()
+
+        self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText("Usuário do OSP Control")
+        config_layout.addRow("👤 Usuário:", self.username_input)
+
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_input.setPlaceholderText("Senha do OSP Control")
+        config_layout.addRow("🔒 Senha:", self.password_input)
+
+        # Botão para salvar credenciais
+        save_btn = QPushButton("💾 Salvar Credenciais")
+        save_btn.clicked.connect(self.save_credentials)
+        config_layout.addRow(save_btn)
+
+        config_group.setLayout(config_layout)
+        layout.addWidget(config_group)
+
+        # Seção de arquivo CSV
+        file_group = QGroupBox("📁 Arquivo CSV")
+        file_layout = QVBoxLayout()
+
+        self.file_label = QLabel("Nenhum arquivo selecionado")
+        self.file_label.setStyleSheet(
+            "padding: 5px; background-color: #f0f0f0; border-radius: 3px;"
+        )
+
+        file_btn_layout = QHBoxLayout()
+        self.select_file_btn = QPushButton("📂 Selecionar CSV")
+        self.select_file_btn.clicked.connect(self.select_csv_file)
+        self.clear_file_btn = QPushButton("🗑️ Limpar")
+        self.clear_file_btn.clicked.connect(self.clear_csv_file)
+
+        file_btn_layout.addWidget(self.select_file_btn)
+        file_btn_layout.addWidget(self.clear_file_btn)
+
+        file_layout.addWidget(self.file_label)
+        file_layout.addLayout(file_btn_layout)
+        file_group.setLayout(file_layout)
+        layout.addWidget(file_group)
+
+        # Seção de modo de extração
+        mode_group = QGroupBox("🎯 Modo de Extração")
+        mode_layout = QVBoxLayout()
+
+        self.mode_draft = QRadioButton("🧾 Draft")
+        self.mode_draft.setChecked(True)
+        self.mode_medicao = QRadioButton("📊 Medição")
+        self.mode_cancelados = QRadioButton("🔎 ID Cancelados")
+        self.mode_memoria = QRadioButton("🧮 Memória de Cálculo")
+
+        mode_layout.addWidget(self.mode_draft)
+        mode_layout.addWidget(self.mode_medicao)
+        mode_layout.addWidget(self.mode_cancelados)
+        mode_layout.addWidget(self.mode_memoria)
+
+        # Tooltip explicativo para Memória de Cálculo
+        self.mode_memoria.setToolTip(
+            "Extrai tabela específica de memória de cálculo com:\n- Classe, Código, Descrição\n- Pontos, Custos Unitário e Total\n- Quantidade Executada"
+        )
+
+        mode_group.setLayout(mode_layout)
+        layout.addWidget(mode_group)
+
+        # Barra de progresso
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+
+        # Área de logs
+        log_group = QGroupBox("📝 Logs")
+        log_layout = QVBoxLayout()
+
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(200)
+        log_layout.addWidget(self.log_text)
+
+        log_group.setLayout(log_layout)
+        layout.addWidget(log_group)
+
+        # Botões de ação
+        action_layout = QHBoxLayout()
+
+        self.start_btn = QPushButton("🚀 Iniciar Scraping")
+        self.start_btn.clicked.connect(self.start_scraping)
+        self.start_btn.setStyleSheet(
+            "background-color: #4CAF50; color: white; font-weight: bold; padding: 10px;"
+        )
+
+        self.stop_btn = QPushButton("⏹️ Parar")
+        self.stop_btn.clicked.connect(self.stop_scraping)
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setStyleSheet(
+            "background-color: #f44336; color: white; padding: 10px;"
+        )
+
+        self.clear_logs_btn = QPushButton("🗑️ Limpar Logs")
+        self.clear_logs_btn.clicked.connect(self.clear_logs)
+
+        action_layout.addWidget(self.start_btn)
+        action_layout.addWidget(self.stop_btn)
+        action_layout.addWidget(self.clear_logs_btn)
+
+        layout.addLayout(action_layout)
+
+        # Status bar
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Pronto")
+
+    def load_config(self):
+        """Carrega configurações salvas"""
+        config_file = "config.json"
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, "r") as f:
+                    config = json.load(f)
+                    self.username_input.setText(config.get("username", ""))
+                    self.password_input.setText(config.get("password", ""))
+            except:
+                pass
+
+    def save_credentials(self):
+        """Salva credenciais em arquivo"""
+        config = {
+            "username": self.username_input.text(),
+            "password": self.password_input.text(),
+        }
+
+        try:
+            with open("config.json", "w") as f:
+                json.dump(config, f)
+            self.log_message("✅ Credenciais salvas com sucesso!")
+        except Exception as e:
+            self.log_message(f"❌ Erro ao salvar credenciais: {str(e)}")
+
+    def select_csv_file(self):
+        """Seleciona arquivo CSV"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Selecionar arquivo CSV", "", "Arquivos CSV (*.csv)"
+        )
+
+        if file_path:
+            self.csv_path = file_path
+            self.file_label.setText(f"📄 {os.path.basename(file_path)}")
+            self.log_message(f"✅ Arquivo CSV selecionado: {file_path}")
+
+    def clear_csv_file(self):
+        """Limpa seleção de arquivo CSV"""
+        self.csv_path = ""
+        self.file_label.setText("Nenhum arquivo selecionado")
+        self.log_message("🗑️ Seleção de arquivo removida")
+
+    def get_selected_mode(self):
+        """Retorna o modo selecionado"""
+        if self.mode_draft.isChecked():
+            return 1
+        elif self.mode_medicao.isChecked():
+            return 2
+        elif self.mode_cancelados.isChecked():
+            return 3
+        elif self.mode_memoria.isChecked():
+            return 4
+        return 1
+
+    def start_scraping(self):
+        """Inicia o processo de scraping"""
+        if not self.csv_path:
+            QMessageBox.warning(self, "Atenção", "Selecione um arquivo CSV primeiro!")
+            return
+
+        # Aviso especial para Memória de Cálculo
+        if self.mode_memoria.isChecked():
+            reply = QMessageBox.information(
+                self,
+                "Modo Memória de Cálculo",
+                "Este modo extrai a tabela específica de memória de cálculo com:\n"
+                "- Classe, Código, Descrição do Serviço\n"
+                "- Unidade, Pontos, Custo Unitário\n"
+                "- Quantidade Executada, Pontos Totais, Custo Total\n\n"
+                "O processo navegará por todas as páginas automaticamente.\n\n"
+                "Deseja continuar?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
+
+        if not self.username_input.text() or not self.password_input.text():
+            reply = QMessageBox.question(
+                self,
+                "Confirmação",
+                "Credenciais não preenchidas. O navegador abrirá para login manual.\nDeseja continuar?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
+
+        # Desabilitar controles durante execução
+        self.start_btn.setEnabled(False)
+        self.select_file_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+
+        # Criar e configurar worker
+        self.worker = WebScraperWorker()
+        self.worker.csv_path = self.csv_path
+        self.worker.mode = self.get_selected_mode()
+        self.worker.username = self.username_input.text()
+        self.worker.password = self.password_input.text()
+
+        # Conectar sinais
+        self.worker.progress.connect(self.update_progress)
+        self.worker.message.connect(self.log_message)
+        self.worker.error.connect(self.show_error)
+        self.worker.finished.connect(self.on_finished)
+        self.worker.data_saved.connect(self.on_data_saved)
+
+        # Iniciar thread
+        self.worker.start()
+
+        mode_text = {
+            1: "Draft",
+            2: "Medição",
+            3: "ID Cancelados",
+            4: "Memória de Cálculo",
+        }
+        self.log_message(f"🚀 Iniciando extração de {mode_text[self.worker.mode]}...")
+
+    def stop_scraping(self):
+        """Para o scraping em execução"""
+        if self.worker:
+            self.worker.stop()
+            self.log_message("⏹️ Parando processo...")
+            self.stop_btn.setEnabled(False)
+
+    def update_progress(self, value):
+        """Atualiza barra de progresso"""
+        self.progress_bar.setValue(value)
+
+    def log_message(self, message):
+        """Adiciona mensagem ao log"""
+        timestamp = QDateTime.currentDateTime().toString("hh:mm:ss")
+        self.log_text.append(f"[{timestamp}] {message}")
+        self.status_bar.showMessage(message)
+
+        # Rolagem automática para baixo
+        cursor = self.log_text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.log_text.setTextCursor(cursor)
+
+    def show_error(self, error_message):
+        """Exibe mensagem de erro"""
+        self.log_message(f"❌ {error_message}")
+        QMessageBox.critical(self, "Erro", error_message)
+
+    def on_finished(self):
+        """Chamado quando o worker termina"""
+        self.start_btn.setEnabled(True)
+        self.select_file_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.log_message("✅ Processo finalizado!")
+
+        # Perguntar se deseja abrir a pasta de downloads
+        if self.csv_path:
+            reply = QMessageBox.question(
+                self,
+                "Concluído",
+                "Processo finalizado! Deseja abrir a pasta de Downloads?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                downloads_path = Path.home() / "Downloads"
+                os.startfile(downloads_path)
+
+    def on_data_saved(self, file_path):
+        """Chamado quando dados são salvos"""
+        self.log_message(f"💾 Dados salvos em: {file_path}")
+
+    def clear_logs(self):
+        """Limpa os logs"""
+        self.log_text.clear()
+        self.log_message("🗑️ Logs limpos")
+
+    def closeEvent(self, event):
+        """Evento de fechamento da janela"""
+        if self.worker and self.worker.isRunning():
+            reply = QMessageBox.question(
+                self,
+                "Confirmar saída",
+                "O scraping está em execução. Deseja realmente sair?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+
+            if reply == QMessageBox.StandardButton.Yes:
+                self.worker.stop()
+                self.worker.wait()
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            event.accept()
+
+
+# ===========================================================
+# 📦 FUNÇÃO PRINCIPAL
+# ===========================================================
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+
+    # Definir estilo CSS
+    app.setStyleSheet("""
+        QMainWindow {
+            background-color: #f5f5f5;
+        }
+        QGroupBox {
+            font-weight: bold;
+            border: 2px solid #cccccc;
+            border-radius: 5px;
+            margin-top: 10px;
+            padding-top: 10px;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 5px 0 5px;
+        }
+        QPushButton {
+            padding: 5px 15px;
+            border-radius: 3px;
+            border: 1px solid #cccccc;
+        }
+        QPushButton:hover {
+            background-color: #e0e0e0;
+        }
+        QTextEdit {
+            border: 1px solid #cccccc;
+            border-radius: 3px;
+            font-family: Consolas, monospace;
+        }
+        QProgressBar {
+            border: 1px solid #cccccc;
+            border-radius: 3px;
+            text-align: center;
+        }
+        QProgressBar::chunk {
+            background-color: #4CAF50;
+            border-radius: 3px;
+        }
+        QRadioButton {
+            padding: 5px;
+        }
+        QRadioButton:hover {
+            background-color: #e8f4fd;
+            border-radius: 3px;
+        }
+    """)
+
+    window = MainWindow()
+    window.show()
+
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
