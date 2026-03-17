@@ -1080,6 +1080,17 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("OSP Vivo Web Scraper")
+
+        # Definir ícone da janela
+        try:
+            # Constrói o caminho para o ícone relativo à localização do script
+            # Assume a estrutura: project_root/app/script.py e project_root/app/img/icon.ico
+            icon_path = Path(__file__).parent / "img" / "ico_osp.ico"
+            if icon_path.exists():
+                self.setWindowIcon(QIcon(str(icon_path)))
+        except Exception:
+            pass  # Ignora erro se o ícone não for encontrado
+
         self.setGeometry(100, 100, 800, 600)
         self.csv_path = ""
         self.worker = None
@@ -1223,25 +1234,29 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Pronto")
 
     def _create_eye_icon(self, visible):
-        """Cria um ícone de olho dinamicamente"""
+        """Cria um ícone de olho dinamicamente, sem usar emojis."""
         pixmap = QPixmap(24, 24)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Desenha emoji de olho
-        font = painter.font()
-        font.setPixelSize(14)
-        painter.setFont(font)
-        painter.setPen(QColor("#555555"))
-        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "👁️")
+        pen = QPen(QColor("#555555"))
+        pen.setWidth(2)
+        painter.setPen(pen)
 
-        if visible:
-            # Desenha um risco vermelho se a senha estiver visível
-            pen = QPen(QColor("#FF0000"))
-            pen.setWidth(2)
-            painter.setPen(pen)
-            painter.drawLine(4, 20, 20, 4)
+        # Desenha o contorno do olho
+        path = QPainterPath()
+        path.moveTo(3, 12)
+        path.quadTo(12, 5, 21, 12)
+        path.quadTo(12, 19, 3, 12)
+        painter.drawPath(path)
+
+        # Desenha a íris
+        painter.drawEllipse(QPoint(12, 12), 3, 3)
+
+        if not visible:
+            # Se a senha estiver oculta (não visível), desenha um risco sobre o olho
+            painter.drawLine(5, 19, 19, 5)
 
         painter.end()
         return QIcon(pixmap)
