@@ -487,6 +487,7 @@ class WebScraperWorker(QThread):
             "UNIDADE",
             "PREÇO TOTAL",
             "CATEGORIA",
+            "STATUS",
         ]
         resultados = []
 
@@ -539,6 +540,7 @@ class WebScraperWorker(QThread):
             "UNIDADE",
             "PREÇO TOTAL",
             "CATEGORIA",
+            "STATUS",
         ]
         resultados = []
 
@@ -581,7 +583,7 @@ class WebScraperWorker(QThread):
         self.message.emit("🔎 Iniciando extração de ID Cancelados...")
         timestamp = datetime.now().strftime("%d-%m-%Y_%Hh%Mm%Ss")
         arquivo = self.download_path / f"osp_id_cancelado_{timestamp}.xlsx"
-        colunas = ["ID", "CONTRATO", "OSP"]
+        colunas = ["ID", "CONTRATO", "OSP", "STATUS"]
         resultados = []
 
         total_ids = len(df)
@@ -604,10 +606,10 @@ class WebScraperWorker(QThread):
                         f"✅ ID {id_value}: Contrato='{dados[1]}', OSP='{dados[2]}'"
                     )
                 else:
-                    resultados.append([id_value, "ERRO", "Nenhum dado retornado"])
+                    resultados.append([id_value, "ERRO", "Nenhum dado retornado", ""])
                     self.message.emit(f"⚠️ Nenhum dado para ID {id_value}")
             except Exception as e:
-                resultados.append([id_value, "ERRO", str(e)])
+                resultados.append([id_value, "ERRO", str(e), ""])
                 self.message.emit(f"❌ Erro no ID {id_value}: {str(e)}")
 
             # Salvar incremental
@@ -686,6 +688,7 @@ class WebScraperWorker(QThread):
         return resultados
 
     def _pesquisar_id(self, page, id_value):
+        status = ""
         try:
             sleep(2)
             page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
@@ -698,6 +701,8 @@ class WebScraperWorker(QThread):
                 "a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')"
             ).click()
             sleep(2)
+
+            status = self._extrair_status_id(page, id_value)
 
             page.locator("span.badge.bg-primary:has-text('Editar')").click()
             sleep(2)
@@ -737,13 +742,14 @@ class WebScraperWorker(QThread):
             )
             osp = osp_locator.text_content().strip() if osp_locator.count() > 0 else ""
 
-            return [id_value, contrato, osp]
+            return [id_value, contrato, osp, status]
 
         except Exception as e:
-            return [id_value, "ERRO", f"Erro: {str(e)}"]
+            return [id_value, "ERRO", f"Erro: {str(e)}", status]
 
     def _pesquisar_id_draft(self, page, id_value):
         try:
+            status = ""
             sleep(2)
             page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
             sleep(2)
@@ -755,6 +761,8 @@ class WebScraperWorker(QThread):
                 "a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')"
             ).click()
             sleep(2)
+
+            status = self._extrair_status_id(page, id_value)
 
             page.locator("span.badge.bg-primary:has-text('Editar')").click()
             sleep(2)
@@ -805,6 +813,7 @@ class WebScraperWorker(QThread):
                             valores[4] if len(valores) > 4 else "",  # UNIDADE
                             valores[5] if len(valores) > 5 else "",  # PREÇO TOTAL
                             categoria,  # CATEGORIA (extraída da página)
+                            status,  # STATUS
                         ]
                         todos_dados.append(dados_linha)
 
@@ -823,6 +832,7 @@ class WebScraperWorker(QThread):
 
     def _pesquisar_id_medicao(self, page, id_value):
         try:
+            status = ""
             sleep(2)
             page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
             sleep(2)
@@ -834,6 +844,8 @@ class WebScraperWorker(QThread):
                 "a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')"
             ).click()
             sleep(2)
+
+            status = self._extrair_status_id(page, id_value)
 
             page.locator("span.badge.bg-primary:has-text('Editar')").click()
             sleep(2)
@@ -888,6 +900,7 @@ class WebScraperWorker(QThread):
                                 valores[4] if len(valores) > 4 else "",  # UNIDADE
                                 valores[5] if len(valores) > 5 else "",  # PREÇO TOTAL
                                 categoria,  # CATEGORIA (extraída da página)
+                                status,  # STATUS
                             ]
                             todos_dados.append(dados_linha)
 
