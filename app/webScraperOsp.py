@@ -417,35 +417,147 @@ class WebScraperWorker(QThread):
                     context = browser.new_context()
 
                 page = context.new_page()
-                page.goto(self.login_url, wait_until="networkidle")
-                self.message.emit("✅ Página carregada.")
+
+                # Loop infinito de tentativa de carregamento da página
+                while self._running:
+                    try:
+                        self.message.emit(f"🌐 Acessando {self.login_url}...")
+                        page.goto(
+                            self.login_url, wait_until="networkidle", timeout=60000
+                        )
+                        self.message.emit("✅ Página carregada.")
+                        break
+                    except Exception as e:
+                        self.message.emit(
+                            f"⚠️ Erro ao carregar página: {str(e)[:100]}... Tentando novamente em 5s."
+                        )
+                        sleep(5)
 
                 # Verificar login
                 if not self._is_logged(page):
                     self.message.emit("🔐 Sessão expirada. Aguardando login manual...")
 
-                    # Preencher usuário e senha se fornecidos
+                    # Injeta a mensagem inicial imediatamente se houver credenciais
                     if self.username and self.password:
-                        try:
-                            page.wait_for_selector(
-                                '//*[@id="username"]', state="visible", timeout=10000
-                            )
-                            page.fill('//*[@id="username"]', self.username)
-                            page.fill('//*[@id="password"]', self.password)
-                            self.message.emit(
-                                "✅ Usuário e senha preenchidos. Complete o CAPTCHA manualmente..."
-                            )
-                        except:
-                            self.message.emit(
-                                "ℹ️ Complete o login manualmente (CAPTCHA)..."
-                            )
+                        page.evaluate("""
+                            () => {
+                                let div = document.getElementById('scraping-msg-overlay');
+                                if (!div) {
+                                    div = document.createElement('div');
+                                    div.id = 'scraping-msg-overlay';
+                                    div.style.position = 'fixed';
+                                    div.style.top = '0';
+                                    div.style.left = '0';
+                                    div.style.width = '100%';
+                                    div.style.textAlign = 'center';
+                                    div.style.zIndex = '99999';
+                                    div.style.padding = '15px';
+                                    div.style.fontSize = '18px';
+                                    div.style.fontWeight = 'bold';
+                                    document.body.prepend(div);
+                                }
+                                div.style.backgroundColor = '#fff3cd';
+                                div.style.color = '#856404';
+                                div.style.borderBottom = '2px solid #ffeeba';
+                                div.innerText = '🤖 O Robô irá preencher as credenciais... Por favor, aguarde!';
+                            }
+                        """)
 
-                    # Aguardar login manual
-                    page.wait_for_selector(
-                        self.logged_selector, timeout=180000, state="visible"
-                    )
-                    self.message.emit("✅ Login detectado! Salvando sessão...")
-                    context.storage_state(path=self.auth_file)
+                    # Loop até detectar login ou cancelamento
+                    while self._running:
+                        # 1. Verifica sucesso do login (timeout curto para não bloquear)
+                        if self._is_logged(page, timeout=2000):
+                            self.message.emit("✅ Login detectado! Salvando sessão...")
+                            context.storage_state(path=self.auth_file)
+                            break
+
+                        # 2. Verifica erro de acesso inválido
+                        try:
+                            if page.locator(
+                                "p.msg", has_text="Acesso inválido"
+                            ).is_visible(timeout=500):
+                                self.message.emit(
+                                    "❌ Login inválido detectado. Recarregando página..."
+                                )
+                                page.goto(
+                                    self.login_url,
+                                    wait_until="networkidle",
+                                    timeout=60000,
+                                )
+                                sleep(2)
+                                continue
+                        except Exception:
+                            pass
+
+                        # 3. Se tiver credenciais, verifica se precisa preencher
+                        if self.username and self.password:
+                            try:
+                                # Verifica se estamos na página de login (campo user visível)
+                                if page.locator('//*[@id="username"]').is_visible():
+                                    val_user = page.input_value('//*[@id="username"]')
+                                    val_pass = page.input_value('//*[@id="password"]')
+
+                                    # Se campos vazios (primeira vez ou reset pós-erro), preenche
+                                    if not val_user and not val_pass:
+                                        self.message.emit(
+                                            "ℹ️ Preenchendo credenciais..."
+                                        )
+
+                                        # Re-injetar mensagem (garante que apareça após reload por erro)
+                                        page.evaluate("""
+                                            () => {
+                                                let div = document.getElementById('scraping-msg-overlay');
+                                                if (!div) {
+                                                    div = document.createElement('div');
+                                                    div.id = 'scraping-msg-overlay';
+                                                    div.style.position = 'fixed';
+                                                    div.style.top = '0';
+                                                    div.style.left = '0';
+                                                    div.style.width = '100%';
+                                                    div.style.textAlign = 'center';
+                                                    div.style.zIndex = '99999';
+                                                    div.style.padding = '15px';
+                                                    div.style.fontSize = '18px';
+                                                    div.style.fontWeight = 'bold';
+                                                    document.body.prepend(div);
+                                                }
+                                                div.style.backgroundColor = '#fff3cd';
+                                                div.style.color = '#856404';
+                                                div.style.borderBottom = '2px solid #ffeeba';
+                                                div.innerText = '🤖 O Robô irá preencher as credenciais... Por favor, aguarde!';
+                                            }
+                                        """)
+
+                                        # Delay para leitura da mensagem
+                                        sleep(3)
+
+                                        # Digitação humanizada
+                                        page.click('//*[@id="username"]')
+                                        page.fill('//*[@id="username"]', "")
+                                        page.keyboard.type(self.username, delay=100)
+
+                                        page.click('//*[@id="password"]')
+                                        page.fill('//*[@id="password"]', "")
+                                        page.keyboard.type(self.password, delay=100)
+
+                                        # Atualizar mensagem na web
+                                        page.evaluate("""
+                                            () => {
+                                                let div = document.getElementById('scraping-msg-overlay');
+                                                if(div) {
+                                                    div.style.backgroundColor = '#d4edda';
+                                                    div.style.color = '#155724';
+                                                    div.style.borderBottom = '2px solid #c3e6cb';
+                                                    div.innerText = '⚠️ AÇÃO NECESSÁRIA: Preencha o CAPTCHA e clique em Entrar!';
+                                                }
+                                            }
+                                        """)
+
+                                        self.message.emit("✅ Credenciais preenchidas.")
+                            except Exception:
+                                pass
+
+                        sleep(1)
                 else:
                     self.message.emit("✅ Já está logado!")
 
@@ -465,9 +577,9 @@ class WebScraperWorker(QThread):
         except Exception as e:
             self.error.emit(f"❌ Erro no playwright: {str(e)}")
 
-    def _is_logged(self, page):
+    def _is_logged(self, page, timeout=5000):
         try:
-            page.wait_for_selector(self.logged_selector, timeout=5000)
+            page.wait_for_selector(self.logged_selector, timeout=timeout)
             return True
         except:
             return False
