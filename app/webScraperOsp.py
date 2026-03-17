@@ -1111,6 +1111,14 @@ class MainWindow(QMainWindow):
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_input.setPlaceholderText("Senha do OSP Control")
+
+        # Adicionar ação de 'olhinho' para revelar senha
+        self.eye_action = self.password_input.addAction(
+            self._create_eye_icon(False), QLineEdit.ActionPosition.TrailingPosition
+        )
+        self.eye_action.triggered.connect(self.toggle_password_visibility)
+        self.eye_action.setToolTip("Mostrar senha")
+
         config_layout.addRow("🔒 Senha:", self.password_input)
 
         # Botão para salvar credenciais
@@ -1213,6 +1221,41 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Pronto")
+
+    def _create_eye_icon(self, visible):
+        """Cria um ícone de olho dinamicamente"""
+        pixmap = QPixmap(24, 24)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Desenha emoji de olho
+        font = painter.font()
+        font.setPixelSize(14)
+        painter.setFont(font)
+        painter.setPen(QColor("#555555"))
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "👁️")
+
+        if visible:
+            # Desenha um risco vermelho se a senha estiver visível
+            pen = QPen(QColor("#FF0000"))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.drawLine(4, 20, 20, 4)
+
+        painter.end()
+        return QIcon(pixmap)
+
+    def toggle_password_visibility(self):
+        """Alterna visibilidade da senha"""
+        if self.password_input.echoMode() == QLineEdit.EchoMode.Password:
+            self.password_input.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.eye_action.setIcon(self._create_eye_icon(True))
+            self.eye_action.setToolTip("Ocultar senha")
+        else:
+            self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.eye_action.setIcon(self._create_eye_icon(False))
+            self.eye_action.setToolTip("Mostrar senha")
 
     def load_config(self):
         """Carrega configurações salvas"""
