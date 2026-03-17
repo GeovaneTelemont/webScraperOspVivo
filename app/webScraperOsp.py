@@ -1167,6 +1167,7 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(False)
         self.select_file_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self.clear_logs_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.last_generated_file = None
@@ -1198,17 +1199,26 @@ class MainWindow(QMainWindow):
 
     def stop_scraping(self):
         """Para o scraping em execução"""
-        if self.worker:
-            self.worker.stop()
-            self.log_message(
-                "🛑 Solicitada parada... Aguarde a finalização da tarefa atual."
-            )
-            QMessageBox.information(
-                self,
-                "Aguarde",
-                "O processo de parada foi iniciado.\nPor favor, aguarde enquanto a operação atual é finalizada com segurança.",
-            )
-            self.stop_btn.setEnabled(False)
+        reply = QMessageBox.question(
+            self,
+            "Confirmar Parada",
+            "Tem certeza que deseja parar o processo?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            if self.worker:
+                self.worker.stop()
+                self.log_message(
+                    "🛑 Solicitada parada... Aguarde a finalização da tarefa atual."
+                )
+                QMessageBox.information(
+                    self,
+                    "Aguarde",
+                    "O processo de parada foi iniciado.\nPor favor, aguarde enquanto a operação atual é finalizada com segurança.",
+                )
+                self.stop_btn.setEnabled(False)
 
     def update_progress(self, value):
         """Atualiza barra de progresso"""
@@ -1235,6 +1245,8 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(True)
         self.select_file_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.clear_logs_btn.setEnabled(True)
+        self.progress_bar.setValue(0)
         self.log_message("✅ Processo finalizado!")
 
         # Perguntar se deseja abrir a pasta de downloads
