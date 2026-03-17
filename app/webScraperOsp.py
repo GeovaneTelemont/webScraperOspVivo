@@ -1287,8 +1287,17 @@ class MainWindow(QMainWindow):
 
     def clear_logs(self):
         """Limpa os logs"""
-        self.log_text.clear()
-        self.log_message("🗑️ Logs limpos")
+        reply = QMessageBox.question(
+            self,
+            "Confirmar Limpeza",
+            "Tem certeza que deseja limpar os logs?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.log_text.clear()
+            self.log_message("🗑️ Logs limpos")
 
     def closeEvent(self, event):
         """Evento de fechamento da janela"""
