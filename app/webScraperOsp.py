@@ -945,6 +945,7 @@ class MainWindow(QMainWindow):
         self.setGeometry(100, 100, 800, 600)
         self.csv_path = ""
         self.worker = None
+        self.last_generated_file = None
 
         self.setup_ui()
         self.load_config()
@@ -1168,6 +1169,7 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(True)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+        self.last_generated_file = None
 
         # Criar e configurar worker
         self.worker = WebScraperWorker()
@@ -1198,7 +1200,14 @@ class MainWindow(QMainWindow):
         """Para o scraping em execução"""
         if self.worker:
             self.worker.stop()
-            self.log_message("⏹️ Parando processo...")
+            self.log_message(
+                "🛑 Solicitada parada... Aguarde a finalização da tarefa atual."
+            )
+            QMessageBox.information(
+                self,
+                "Aguarde",
+                "O processo de parada foi iniciado.\nPor favor, aguarde enquanto a operação atual é finalizada com segurança.",
+            )
             self.stop_btn.setEnabled(False)
 
     def update_progress(self, value):
@@ -1230,18 +1239,38 @@ class MainWindow(QMainWindow):
 
         # Perguntar se deseja abrir a pasta de downloads
         if self.csv_path:
+            msg = "Processo finalizado!"
+            if self.last_generated_file:
+                msg += f"\nArquivo gerado: {os.path.basename(self.last_generated_file)}"
+            msg += "\nDeseja abrir o local do arquivo?"
+
             reply = QMessageBox.question(
                 self,
                 "Concluído",
-                "Processo finalizado! Deseja abrir a pasta de Downloads?",
+                msg,
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply == QMessageBox.StandardButton.Yes:
-                downloads_path = Path.home() / "Downloads"
-                os.startfile(downloads_path)
+                if self.last_generated_file and os.path.exists(
+                    self.last_generated_file
+                ):
+                    if sys.platform == "win32":
+                        subprocess.run(
+                            [
+                                "explorer",
+                                "/select,",
+                                os.path.normpath(self.last_generated_file),
+                            ]
+                        )
+                    else:
+                        os.startfile(os.path.dirname(self.last_generated_file))
+                else:
+                    downloads_path = Path.home() / "Downloads"
+                    os.startfile(downloads_path)
 
     def on_data_saved(self, file_path):
         """Chamado quando dados são salvos"""
+        self.last_generated_file = file_path
         self.log_message(f"💾 Dados salvos em: {file_path}")
 
     def clear_logs(self):
