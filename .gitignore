@@ -1,3 +1,29 @@
+# Arquivos de configuração sensíveis
 auth.json
 config.json
+
+# Configurações de IDE
 .vscode/
+.idea/
+
+# Arquivos de cache e compilados do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ambiente virtual do Poetry
+.venv/
+
+# Arquivos gerados pelo PyInstaller
+build/
+dist/
+*.spec
+
+# Relatórios de teste e cobertura
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Logs e outros arquivos temporários
+pip-log.txt
