@@ -821,9 +821,9 @@ class WebScraperWorker(QThread):
         try:
             # Botão Editar com seletor mais robusto
             page.locator("span.badge.bg-primary", has_text="Editar").click(
-                timeout=20000
+                timeout=10000
             )
-            page.wait_for_selector("a.nav-link", timeout=15000)
+
         except TimeoutError:
             self.message.emit(
                 f"⚠️ ID {id_value}: Botão 'Editar' não encontrado. Status: '{status}'."
@@ -849,6 +849,13 @@ class WebScraperWorker(QThread):
             # Re-localiza o botão do serviço atual
             servicos_btn = page.locator('a[title="Serviços"]').nth(i)
             servicos_btn.click(timeout=10000)
+
+            # Aguarda carregamento da rede para garantir que os campos carreguem
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except:
+                pass
+            page.wait_for_timeout(1000)
 
             page.wait_for_selector(
                 "xpath=/html/body/app-root/app-requisicoes-servicos/div/div/div/div/div[2]/div[2]/div/div/div[2]/div[2]/span",
@@ -1001,7 +1008,7 @@ class WebScraperWorker(QThread):
             page.locator("span.badge.bg-primary", has_text="Editar").click(
                 timeout=10000
             )
-            page.wait_for_selector("a.nav-link", timeout=15000)
+
         except TimeoutError:
             self.message.emit(
                 f"⚠️ ID {id_value}: Botão 'Editar' não encontrado. Status: '{status}'."
@@ -1033,19 +1040,25 @@ class WebScraperWorker(QThread):
             servico = page.locator('a[title="Serviços"]').nth(i)
             servico.click(timeout=10000)
 
-            page.wait_for_selector("//table", timeout=15000)
+            # Aguarda carregamento da rede e das tabelas (Mesma lógica do Draft)
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except:
+                pass
+            page.wait_for_selector("table tbody tr", timeout=15000)
+            page.wait_for_timeout(1000)
 
             # Extração de tabelas com categoria correta
-            tabelas = page.query_selector_all("//table")
+            tabelas = page.locator("table").all()
             for tabela in tabelas:
                 # Extrai categoria da tabela
                 categoria = self._extrair_categoria_tabela(tabela)
 
                 # Extrai linhas da tabela
-                linhas = tabela.query_selector_all("tbody tr")
+                linhas = tabela.locator("tbody tr").all()
                 for linha in linhas:
-                    tds = linha.query_selector_all("td")
-                    valores = [td.inner_text().strip() for td in tds]
+                    tds = linha.locator("td").all()
+                    valores = [td.text_content().strip() for td in tds]
 
                     if len(valores) >= 6:
                         # Determina tipo de registro
