@@ -176,32 +176,29 @@ class WebScraperWorker(QThread):
     def _recover_page_state(self, page):
         """Tenta recuperar o estado da página em caso de erro"""
         try:
-            self.message.emit("🔄 Reiniciando página para nova tentativa...")
+            self.message.emit("🔄 Reiniciando a página para uma nova tentativa...")
             page.goto(self.login_url, wait_until="networkidle", timeout=60000)
-            sleep(2)
         except Exception as e:
             self.message.emit(f"⚠️ Falha na recuperação da página: {str(e)}")
 
     def _scrap_memoria_calculo(self, page, id_value):
         """Extrai todos os dados da memória de cálculo com paginação"""
         # 1. Navegação inicial
-        sleep(2)
         page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
-        sleep(2)
         page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
-        sleep(2)
+        page.wait_for_selector('xpath=//*[@id="filtroId"]', timeout=10000)
         page.fill('xpath=//*[@id="filtroId"]', str(id_value))
-        sleep(2)
         page.locator("a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')").click()
-        sleep(2)
 
         # Extrai o status antes de clicar em editar
         status = self._extrair_status_id(page, id_value)
 
         try:
             # Tenta clicar no botão "Editar"
-            page.locator("span.badge.bg-primary:has-text('Editar')").click(timeout=5000)
-            sleep(2)
+            page.locator("span.badge.bg-primary:has-text('Editar')").click(
+                timeout=10000
+            )
+            page.wait_for_selector('a[title="Serviços"]', timeout=15000)
         except TimeoutError:
             # Se o botão não for encontrado, registra o status e retorna
             self.message.emit(
@@ -210,9 +207,8 @@ class WebScraperWorker(QThread):
             # Volta ao menu principal para o próximo ID
             try:
                 page.click('//*[@id="ott-sidebar-collapse"]')
-                sleep(2)
                 page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
-                sleep(2)
+                page.wait_for_load_state("networkidle", timeout=15000)
             except Exception as nav_error:
                 self.message.emit(
                     f"⚠️ Erro ao voltar ao menu para ID {id_value}: {nav_error}"
@@ -224,14 +220,14 @@ class WebScraperWorker(QThread):
         todos_dados = []
 
         for servico_idx, servico in enumerate(serviços):
-            sleep(6)
             servico.click()
-            sleep(6)
 
             # 3. Tenta encontrar "Memória de Cálculo"
             try:
-                page.locator('//a[text()="Memória de Cálculo"]').click()
-                sleep(3)
+                page.locator('//a[text()="Memória de Cálculo"]').click(timeout=15000)
+                page.wait_for_selector(
+                    "table.ott-table-sm.ott-table-nowrap", timeout=15000
+                )
                 self.message.emit(
                     f"✅ ID {id_value}: Serviço {servico_idx + 1} - Memória de Cálculo"
                 )
@@ -241,13 +237,15 @@ class WebScraperWorker(QThread):
                 )
                 if len(serviços) > 1:
                     page.go_back()
-                    sleep(5)
+                    page.wait_for_load_state("networkidle", timeout=15000)
                 continue
 
             # 4. Tenta mostrar 50 itens
             try:
-                page.select_option("select.custom-select", label="50 itens")
-                sleep(3)
+                page.select_option(
+                    "select.custom-select", label="50 itens", timeout=5000
+                )
+                page.wait_for_load_state("networkidle", timeout=15000)
                 self.message.emit(f"📊 ID {id_value}: Selecionou '50 itens'")
             except:
                 self.message.emit(f"ℹ️ ID {id_value}: Sem select ou já está em 50 itens")
@@ -338,7 +336,7 @@ class WebScraperWorker(QThread):
                     page.locator(
                         '//li[not(contains(@class, "disabled"))]//a[@aria-label="Next"]'
                     ).first.click()
-                    sleep(3)
+                    page.wait_for_load_state("networkidle", timeout=15000)
                     pagina += 1
                 except Exception as e:
                     self.message.emit(f"   ❌ Erro ao mudar página: {str(e)}")
@@ -347,14 +345,12 @@ class WebScraperWorker(QThread):
             # 9. VOLTA PARA LISTA DE SERVIÇOS (se houver mais de um)
             if len(serviços) > 1 and servico_idx < len(serviços) - 1:
                 page.go_back()
-                sleep(5)
+                page.wait_for_load_state("networkidle", timeout=15000)
 
         # 10. VOLTA AO MENU PRINCIPAL
-        sleep(2)
         page.click('//*[@id="ott-sidebar-collapse"]')
-        sleep(2)
         page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
-        sleep(2)
+        page.wait_for_load_state("networkidle", timeout=15000)
 
         self.message.emit(
             f"✅ ID {id_value}: Finalizado - {len(todos_dados)} linhas extraídas"
@@ -470,7 +466,6 @@ class WebScraperWorker(QThread):
                                     wait_until="networkidle",
                                     timeout=60000,
                                 )
-                                sleep(2)
                                 continue
                         except Exception:
                             pass
@@ -815,21 +810,19 @@ class WebScraperWorker(QThread):
     def _pesquisar_id(self, page, id_value):
         status = ""
         # Navegação
-        sleep(2)
         page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
-        sleep(2)
         page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
-        sleep(2)
+        page.wait_for_selector('xpath=//*[@id="filtroId"]', timeout=10000)
         page.fill('xpath=//*[@id="filtroId"]', str(id_value))
-        sleep(2)
         page.locator("a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')").click()
-        sleep(2)
 
         status = self._extrair_status_id(page, id_value)
 
         try:
-            page.locator("span.badge.bg-primary:has-text('Editar')").click(timeout=5000)
-            sleep(2)
+            page.locator("span.badge.bg-primary:has-text('Editar')").click(
+                timeout=10000
+            )
+            page.wait_for_selector("a.nav-link", timeout=15000)
         except TimeoutError:
             self.message.emit(
                 f"⚠️ ID {id_value}: Botão 'Editar' não encontrado. Status: '{status}'."
@@ -845,15 +838,18 @@ class WebScraperWorker(QThread):
                 links.nth(i).click()
                 break
 
-        sleep(3)
+        page.wait_for_selector('a[title="Serviços"]', timeout=15000)
 
         # Verifica botão Serviços
         servicos_btn = page.locator('a[title="Serviços"]')
         if servicos_btn.count() == 0:
             raise Exception("Botão serviço não encontrado")
 
-        servicos_btn.click()
-        sleep(3)
+        servicos_btn.click(timeout=10000)
+        page.wait_for_selector(
+            "xpath=/html/body/app-root/app-requisicoes-servicos/div/div/div/div/div[2]/div[2]/div/div/div[2]/div[2]/span",
+            timeout=15000,
+        )
 
         # Extrai Contrato
         contrato = (
@@ -863,7 +859,6 @@ class WebScraperWorker(QThread):
             .text_content()
             .strip()
         )
-        sleep(2)
 
         # Extrai OSP
         osp_locator = page.locator(
@@ -875,30 +870,27 @@ class WebScraperWorker(QThread):
 
     def _pesquisar_id_draft(self, page, id_value):
         status = ""
-        sleep(2)
         page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
-        sleep(2)
         page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
-        sleep(2)
+        page.wait_for_selector('xpath=//*[@id="filtroId"]', timeout=10000)
         page.fill('xpath=//*[@id="filtroId"]', str(id_value))
-        sleep(2)
         page.locator("a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')").click()
-        sleep(2)
 
         status = self._extrair_status_id(page, id_value)
 
         try:
-            page.locator("span.badge.bg-primary:has-text('Editar')").click(timeout=5000)
-            sleep(2)
+            page.locator("span.badge.bg-primary:has-text('Editar')").click(
+                timeout=10000
+            )
+            page.wait_for_selector("a.nav-link", timeout=15000)
         except TimeoutError:
             self.message.emit(
                 f"⚠️ ID {id_value}: Botão 'Editar' não encontrado. Status: '{status}'."
             )
             try:
                 page.click('//*[@id="ott-sidebar-collapse"]')
-                sleep(2)
                 page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
-                sleep(2)
+                page.wait_for_load_state("networkidle", timeout=15000)
             except:
                 pass
             return [[id_value, "", "", "", "", "", "", "", "", status]]
@@ -912,9 +904,9 @@ class WebScraperWorker(QThread):
                 links.nth(i).click()
                 break
 
-        sleep(3)
-        page.locator('a[title="Serviços"]').click()
-        sleep(2)
+        page.wait_for_selector('a[title="Serviços"]', timeout=15000)
+        page.locator('a[title="Serviços"]').click(timeout=10000)
+        page.wait_for_selector("//table", timeout=15000)
 
         # Extração de tabelas com categoria correta
         todos_dados = []
@@ -954,40 +946,35 @@ class WebScraperWorker(QThread):
                     todos_dados.append(dados_linha)
 
         # Volta ao menu
-        sleep(2)
         page.click('//*[@id="ott-sidebar-collapse"]')
-        sleep(2)
         page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
-        sleep(2)
+        page.wait_for_load_state("networkidle", timeout=15000)
 
         return todos_dados
 
     def _pesquisar_id_medicao(self, page, id_value):
         status = ""
-        sleep(2)
         page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
-        sleep(2)
         page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
-        sleep(2)
+        page.wait_for_selector('xpath=//*[@id="filtroId"]', timeout=10000)
         page.fill('xpath=//*[@id="filtroId"]', str(id_value))
-        sleep(2)
         page.locator("a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')").click()
-        sleep(2)
 
         status = self._extrair_status_id(page, id_value)
 
         try:
-            page.locator("span.badge.bg-primary:has-text('Editar')").click(timeout=5000)
-            sleep(2)
+            page.locator("span.badge.bg-primary:has-text('Editar')").click(
+                timeout=10000
+            )
+            page.wait_for_selector("a.nav-link", timeout=15000)
         except TimeoutError:
             self.message.emit(
                 f"⚠️ ID {id_value}: Botão 'Editar' não encontrado. Status: '{status}'."
             )
             try:
                 page.click('//*[@id="ott-sidebar-collapse"]')
-                sleep(2)
                 page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
-                sleep(2)
+                page.wait_for_load_state("networkidle", timeout=15000)
             except:
                 pass
             return [[id_value, "", "", "", "", "", "", "", "", status]]
@@ -1001,15 +988,14 @@ class WebScraperWorker(QThread):
                 links.nth(i).click()
                 break
 
-        sleep(5)
+        page.wait_for_selector('a[title="Serviços"]', timeout=15000)
 
         serviços = page.locator('a[title="Serviços"]').all()
         todos_dados = []
 
         for servico in serviços:
-            sleep(6)
-            servico.click()
-            sleep(5)
+            servico.click(timeout=10000)
+            page.wait_for_selector("//table", timeout=15000)
 
             # Extração de tabelas com categoria correta
             tabelas = page.query_selector_all("//table")
@@ -1048,7 +1034,7 @@ class WebScraperWorker(QThread):
 
             if len(serviços) > 1:
                 page.go_back()
-                sleep(5)
+                page.wait_for_load_state("networkidle", timeout=15000)
                 # Navega até aba "Medição" novamente
                 links = page.locator("a.nav-link")
                 total = int(links.count())
@@ -1059,11 +1045,9 @@ class WebScraperWorker(QThread):
                         break
 
         # Volta ao menu
-        sleep(2)
         page.click('//*[@id="ott-sidebar-collapse"]')
-        sleep(2)
         page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
-        sleep(2)
+        page.wait_for_load_state("networkidle", timeout=15000)
 
         return todos_dados
 
