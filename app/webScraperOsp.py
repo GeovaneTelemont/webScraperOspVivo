@@ -705,9 +705,9 @@ class WebScraperWorker(QThread):
                 try:
                     dados = self._pesquisar_id(page, id_value)
                     if dados:
-                        resultados.append(dados)
+                        resultados.extend(dados)
                         self.message.emit(
-                            f"✅ ID {id_value}: Contrato='{dados[1]}', OSP='{dados[2]}'"
+                            f"✅ ID {id_value}: Extraído ({len(dados)} registros)"
                         )
                     else:
                         resultados.append(
@@ -807,7 +807,7 @@ class WebScraperWorker(QThread):
 
         return resultados
 
-    def _pesquisar_id(self, page, id_value):
+    def _pesquisar_id_cancelado(self, page, id_value):
         status = ""
         # Navegação
         page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
@@ -819,15 +819,16 @@ class WebScraperWorker(QThread):
         status = self._extrair_status_id(page, id_value)
 
         try:
-            page.locator("span.badge.bg-primary:has-text('Editar')").click(
-                timeout=10000
+            # Botão Editar com seletor mais robusto
+            page.locator("span.badge.bg-primary", has_text="Editar").click(
+                timeout=20000
             )
             page.wait_for_selector("a.nav-link", timeout=15000)
         except TimeoutError:
             self.message.emit(
                 f"⚠️ ID {id_value}: Botão 'Editar' não encontrado. Status: '{status}'."
             )
-            return [id_value, "", "", status]
+            return [[id_value, "", "", status]]
 
         # Navega até aba "Medição"
         links = page.locator("a.nav-link")
@@ -840,33 +841,46 @@ class WebScraperWorker(QThread):
 
         page.wait_for_selector('a[title="Serviços"]', timeout=15000)
 
-        # Verifica botão Serviços
-        servicos_btn = page.locator('a[title="Serviços"]')
-        if servicos_btn.count() == 0:
-            raise Exception("Botão serviço não encontrado")
+        # Loop por todos os serviços
+        count_servicos = page.locator('a[title="Serviços"]').count()
+        todos_dados = []
 
-        servicos_btn.click(timeout=10000)
-        page.wait_for_selector(
-            "xpath=/html/body/app-root/app-requisicoes-servicos/div/div/div/div/div[2]/div[2]/div/div/div[2]/div[2]/span",
-            timeout=15000,
-        )
+        for i in range(count_servicos):
+            # Re-localiza o botão do serviço atual
+            servicos_btn = page.locator('a[title="Serviços"]').nth(i)
+            servicos_btn.click(timeout=10000)
 
-        # Extrai Contrato
-        contrato = (
-            page.locator(
+            page.wait_for_selector(
+                "xpath=/html/body/app-root/app-requisicoes-servicos/div/div/div/div/div[2]/div[2]/div/div/div[2]/div[2]/span",
+                timeout=15000,
+            )
+
+            # Extrai Contrato
+            contrato_el = page.locator(
                 "xpath=/html/body/app-root/app-requisicoes-servicos/div/div/div/div/div[2]/div[2]/div/div/div[2]/div[2]/span"
             )
-            .text_content()
-            .strip()
-        )
+            contrato = (
+                contrato_el.text_content().strip() if contrato_el.count() > 0 else ""
+            )
 
-        # Extrai OSP
-        osp_locator = page.locator(
-            "xpath=/html/body/app-root/app-requisicoes-servicos/div/div/div/div/div[2]/div[3]/div/div[2]/div/strong"
-        )
-        osp = osp_locator.text_content().strip() if osp_locator.count() > 0 else ""
+            # Extrai OSP
+            osp_locator = page.locator(
+                "xpath=/html/body/app-root/app-requisicoes-servicos/div/div/div/div/div[2]/div[3]/div/div[2]/div/strong"
+            )
+            osp = osp_locator.text_content().strip() if osp_locator.count() > 0 else ""
 
-        return [id_value, contrato, osp, status]
+            todos_dados.append([id_value, contrato, osp, status])
+
+            # Volta para a lista de serviços se houver mais de um
+            if count_servicos > 1 and i < count_servicos - 1:
+                page.go_back()
+                page.wait_for_load_state("networkidle", timeout=15000)
+
+        return todos_dados
+
+    # Método alias para manter compatibilidade se chamado como _pesquisar_id
+    def _pesquisar_id(self, page, id_value):
+        return self._pesquisar_id_cancelado(page, id_value)
 
     def _pesquisar_id_draft(self, page, id_value):
         status = ""
@@ -879,10 +893,10 @@ class WebScraperWorker(QThread):
         status = self._extrair_status_id(page, id_value)
 
         try:
-            page.locator("span.badge.bg-primary:has-text('Editar')").click(
+            # Botão Editar com seletor mais robusto
+            page.locator("span.badge.bg-primary", has_text="Editar").first.click(
                 timeout=10000
             )
-            page.wait_for_selector("a.nav-link", timeout=15000)
         except TimeoutError:
             self.message.emit(
                 f"⚠️ ID {id_value}: Botão 'Editar' não encontrado. Status: '{status}'."
@@ -895,7 +909,6 @@ class WebScraperWorker(QThread):
                 pass
             return [[id_value, "", "", "", "", "", "", "", "", status]]
 
-        # Navega até aba "Draft"
         links = page.locator("a.nav-link")
         total = int(links.count())
         for i in range(total):
@@ -905,45 +918,66 @@ class WebScraperWorker(QThread):
                 break
 
         page.wait_for_selector('a[title="Serviços"]', timeout=15000)
-        page.locator('a[title="Serviços"]').click(timeout=10000)
-        page.wait_for_selector("//table", timeout=15000)
 
-        # Extração de tabelas com categoria correta
+        # Loop por todos os serviços
+        count_servicos = page.locator('a[title="Serviços"]').count()
+
         todos_dados = []
-        tabelas = page.query_selector_all("//table")
 
-        for tabela in tabelas:
-            # Extrai categoria da tabela
-            categoria = self._extrair_categoria_tabela(tabela)
+        for i in range(count_servicos):
+            # Re-localiza o botão do serviço atual
+            servicos_btn = page.locator('a[title="Serviços"]').nth(i)
+            servicos_btn.click(timeout=10000)
 
-            # Extrai linhas da tabela
-            linhas = tabela.query_selector_all("tbody tr")
-            for linha in linhas:
-                tds = linha.query_selector_all("td")
-                valores = [td.inner_text().strip() for td in tds]
+            # Aguarda carregamento da rede e das tabelas
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except:
+                pass
+            page.wait_for_selector("table tbody tr", timeout=15000)
+            # Pequena pausa extra para garantir renderização completa do Angular
+            page.wait_for_timeout(1000)
 
-                if len(valores) >= 6:
-                    # Determina tipo de registro
-                    tipo_registro = self._determinar_tipo_registro(
-                        categoria,
-                        valores[4] if len(valores) > 4 else "",
-                        valores[1] if len(valores) > 1 else "",
-                    )
+            # Extração de tabelas com categoria correta
+            tabelas = page.locator("table").all()
 
-                    # Monta a linha de dados
-                    dados_linha = [
-                        id_value,  # ID
-                        tipo_registro,  # TIPO DE REGISTRO
-                        valores[0],  # CÓDIGO
-                        valores[1],  # DESCRIÇÃO
-                        valores[2],  # QUANTIDADE
-                        valores[3],  # PREÇO UNITÁRIO
-                        valores[4] if len(valores) > 4 else "",  # UNIDADE
-                        valores[5] if len(valores) > 5 else "",  # PREÇO TOTAL
-                        categoria,  # CATEGORIA (extraída da página)
-                        status,  # STATUS
-                    ]
-                    todos_dados.append(dados_linha)
+            for tabela in tabelas:
+                # Extrai categoria da tabela
+                categoria = self._extrair_categoria_tabela(tabela)
+
+                # Extrai linhas da tabela
+                linhas = tabela.locator("tbody tr").all()
+                for linha in linhas:
+                    tds = linha.locator("td").all()
+                    # Usa text_content para garantir leitura mesmo se oculto/aninhado
+                    valores = [td.text_content().strip() for td in tds]
+
+                    if len(valores) >= 6:
+                        # Determina tipo de registro
+                        tipo_registro = self._determinar_tipo_registro(
+                            categoria,
+                            valores[4] if len(valores) > 4 else "",
+                            valores[1] if len(valores) > 1 else "",
+                        )
+
+                        # Monta a linha de dados
+                        dados_linha = [
+                            id_value,  # ID
+                            tipo_registro,  # TIPO DE REGISTRO
+                            valores[0],  # CÓDIGO
+                            valores[1],  # DESCRIÇÃO
+                            valores[2],  # QUANTIDADE
+                            valores[3],  # PREÇO UNITÁRIO
+                            valores[4] if len(valores) > 4 else "",  # UNIDADE
+                            valores[5] if len(valores) > 5 else "",  # PREÇO TOTAL
+                            categoria,  # CATEGORIA (extraída da página)
+                            status,  # STATUS
+                        ]
+                        todos_dados.append(dados_linha)
+            # Volta para a lista de serviços se houver mais de um
+            if count_servicos > 1 and i < count_servicos - 1:
+                page.go_back()
+                page.wait_for_load_state("networkidle", timeout=15000)
 
         # Volta ao menu
         page.click('//*[@id="ott-sidebar-collapse"]')
@@ -963,7 +997,8 @@ class WebScraperWorker(QThread):
         status = self._extrair_status_id(page, id_value)
 
         try:
-            page.locator("span.badge.bg-primary:has-text('Editar')").click(
+            # Botão Editar com seletor mais robusto
+            page.locator("span.badge.bg-primary", has_text="Editar").click(
                 timeout=10000
             )
             page.wait_for_selector("a.nav-link", timeout=15000)
@@ -990,11 +1025,14 @@ class WebScraperWorker(QThread):
 
         page.wait_for_selector('a[title="Serviços"]', timeout=15000)
 
-        serviços = page.locator('a[title="Serviços"]').all()
+        count_servicos = page.locator('a[title="Serviços"]').count()
         todos_dados = []
 
-        for servico in serviços:
+        for i in range(count_servicos):
+            # Re-localiza o botão do serviço atual
+            servico = page.locator('a[title="Serviços"]').nth(i)
             servico.click(timeout=10000)
+
             page.wait_for_selector("//table", timeout=15000)
 
             # Extração de tabelas com categoria correta
@@ -1032,17 +1070,9 @@ class WebScraperWorker(QThread):
                         ]
                         todos_dados.append(dados_linha)
 
-            if len(serviços) > 1:
+            if count_servicos > 1 and i < count_servicos - 1:
                 page.go_back()
                 page.wait_for_load_state("networkidle", timeout=15000)
-                # Navega até aba "Medição" novamente
-                links = page.locator("a.nav-link")
-                total = int(links.count())
-                for i in range(total):
-                    texto = links.nth(i).text_content().strip()
-                    if texto == "Medição":
-                        links.nth(i).click()
-                        break
 
         # Volta ao menu
         page.click('//*[@id="ott-sidebar-collapse"]')
