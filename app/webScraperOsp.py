@@ -395,13 +395,24 @@ class WebScraperWorker(QThread):
                     args=["--ignore-certificate-errors"],
                 )
 
+                # Configurações para garantir que o site carregue igual ao modo normal
+                # (Tamanho de tela Full HD e User Agent de navegador real)
+                user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                viewport_config = {"width": 800, "height": 600}
+
                 # Verificar se há sessão salva
                 if os.path.exists(self.auth_file):
                     self.message.emit("🔑 Carregando sessão existente...")
-                    context = browser.new_context(storage_state=self.auth_file)
+                    context = browser.new_context(
+                        storage_state=self.auth_file,
+                        user_agent=user_agent,
+                        viewport=viewport_config,
+                    )
                 else:
                     self.message.emit("🆕 Criando nova sessão...")
-                    context = browser.new_context()
+                    context = browser.new_context(
+                        user_agent=user_agent, viewport=viewport_config
+                    )
 
                 page = context.new_page()
 
