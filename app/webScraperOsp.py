@@ -830,15 +830,6 @@ class WebScraperWorker(QThread):
             )
             return [[id_value, "", "", status]]
 
-        # Navega até aba "Medição"
-        links = page.locator("a.nav-link")
-        total = int(links.count())
-        for i in range(total):
-            texto = links.nth(i).text_content().strip()
-            if texto == "Medição":
-                links.nth(i).click()
-                break
-
         page.wait_for_selector('a[title="Serviços"]', timeout=15000)
 
         # Loop por todos os serviços
@@ -874,7 +865,11 @@ class WebScraperWorker(QThread):
             osp_locator = page.locator(
                 "xpath=/html/body/app-root/app-requisicoes-servicos/div/div/div/div/div[2]/div[3]/div/div[2]/div/strong"
             )
-            osp = osp_locator.text_content().strip() if osp_locator.count() > 0 else ""
+            osp = (
+                osp_locator.text_content().strip()
+                if osp_locator.count() > 0
+                else "ATIVO"
+            )
 
             todos_dados.append([id_value, contrato, osp, status])
 
@@ -915,14 +910,6 @@ class WebScraperWorker(QThread):
             except:
                 pass
             return [[id_value, "", "", "", "", "", "", "", "", status]]
-
-        links = page.locator("a.nav-link")
-        total = int(links.count())
-        for i in range(total):
-            texto = links.nth(i).text_content().strip()
-            if texto == "Draft":
-                links.nth(i).click()
-                break
 
         page.wait_for_selector('a[title="Serviços"]', timeout=15000)
 
@@ -1022,13 +1009,26 @@ class WebScraperWorker(QThread):
             return [[id_value, "", "", "", "", "", "", "", "", status]]
 
         # Navega até aba "Medição"
-        links = page.locator("a.nav-link")
-        total = int(links.count())
-        for i in range(total):
-            texto = links.nth(i).text_content().strip()
-            if texto == "Medição":
-                links.nth(i).click()
-                break
+        # links = page.locator("a.nav-link")
+        # total = int(links.count())
+        # for i in range(total):
+        #     texto = links.nth(i).text_content().strip()
+        #     if texto == "Medição":
+        #         links.nth(i).click()
+        #         break
+
+        # clicar no link de Medição usando seletor mais robusto
+        try:
+            page.get_by_role("tab", name="Medição", exact=True).click(timeout=10000)
+
+        except TimeoutError:
+            status = "Este ID não existe link de Medição"
+            self.message.emit(
+                f"⚠️ ID {id_value}: Botão 'Medição' não encontrado. Status: '{status}'."
+            )
+            return [[id_value, "", "", "", "", "", "", "", "", status]]
+
+        page.wait_for_timeout(2000)
 
         page.wait_for_selector('a[title="Serviços"]', timeout=15000)
 
@@ -1053,7 +1053,7 @@ class WebScraperWorker(QThread):
             for tabela in tabelas:
                 # Extrai categoria da tabela
                 categoria = self._extrair_categoria_tabela(tabela)
-
+                print(tabela)
                 # Extrai linhas da tabela
                 linhas = tabela.locator("tbody tr").all()
                 for linha in linhas:
