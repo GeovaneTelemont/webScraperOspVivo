@@ -43,6 +43,7 @@ class WebScraperWorker(QThread):
         self.username = ""
         self.password = ""
         self.download_path = Path.home() / "Downloads"
+        self.headless_enabled = False
         self._running = True
 
     def _normalize_text(self, s: str) -> str:
@@ -388,10 +389,23 @@ class WebScraperWorker(QThread):
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as p:
-                self.message.emit("🌐 Iniciando navegador...")
+                # Lógica de Headless Inteligente
+                # Se estiver configurado para headless, mas não tiver arquivo de sessão,
+                # forçamos o modo visível para permitir o login.
+                start_headless = self.headless_enabled
+                if start_headless and not os.path.exists(self.auth_file):
+                    self.message.emit(
+                        "ℹ️ Modo Headless ativo, mas sem sessão salva. Iniciando visível para login..."
+                    )
+                    start_headless = False
+
+                self.message.emit(
+                    f"🌐 Iniciando navegador (Headless: {'Sim' if start_headless else 'Não'})..."
+                )
+
                 browser = p.chromium.launch(
                     channel="chrome",
-                    headless=False,
+                    headless=start_headless,
                     args=["--ignore-certificate-errors"],
                 )
 
@@ -434,6 +448,33 @@ class WebScraperWorker(QThread):
                 # Verificar login
                 if not self._is_logged(page):
                     self.message.emit("🔐 Sessão expirada. Aguardando login manual...")
+
+                    # SE estivermos em modo Headless e o login falhou (sessão expirada),
+                    # precisamos reiniciar o navegador em modo VISÍVEL.
+                    if start_headless:
+                        self.message.emit(
+                            "⚠️ Login necessário! Reiniciando navegador em modo visível..."
+                        )
+                        context.close()
+                        browser.close()
+
+                        # Reinicia visível
+                        start_headless = False
+                        browser = p.chromium.launch(
+                            channel="chrome",
+                            headless=False,
+                            args=["--ignore-certificate-errors"],
+                        )
+
+                        # Recria contexto e página
+                        self.message.emit("🆕 Criando nova sessão para login...")
+                        context = browser.new_context(
+                            user_agent=user_agent, viewport=viewport_config
+                        )
+                        page = context.new_page()
+                        page.goto(
+                            self.login_url, wait_until="networkidle", timeout=60000
+                        )
 
                     # Injeta a mensagem inicial imediatamente se houver credenciais
                     if self.username and self.password:
@@ -555,6 +596,30 @@ class WebScraperWorker(QThread):
                                 pass
 
                         sleep(1)
+
+                    # Se configurado para Headless e estava visível para login, reinicia em Headless após sucesso
+                    if self.headless_enabled and not start_headless and self._running:
+                        self.message.emit(
+                            "🔄 Login concluído. Alternando para modo Headless..."
+                        )
+                        context.close()
+                        browser.close()
+
+                        start_headless = True
+                        browser = p.chromium.launch(
+                            channel="chrome",
+                            headless=True,
+                            args=["--ignore-certificate-errors"],
+                        )
+                        context = browser.new_context(
+                            storage_state=self.auth_file,
+                            user_agent=user_agent,
+                            viewport=viewport_config,
+                        )
+                        page = context.new_page()
+                        page.goto(
+                            self.login_url, wait_until="networkidle", timeout=60000
+                        )
                 else:
                     self.message.emit("✅ Já está logado!")
 
@@ -1175,6 +1240,10 @@ class MainWindow(QMainWindow):
 
         config_layout.addRow("🔒 Senha:", self.password_input)
 
+        # Checkbox para modo Headless
+        self.headless_checkbox = QCheckBox("👻 Executar em modo oculto (Headless)")
+        config_layout.addRow(self.headless_checkbox)
+
         # Botão para salvar credenciais
         save_btn = QPushButton("💾 Salvar Credenciais")
         save_btn.clicked.connect(self.save_credentials)
@@ -1324,6 +1393,7 @@ class MainWindow(QMainWindow):
                     config = json.load(f)
                     self.username_input.setText(config.get("username", ""))
                     self.password_input.setText(config.get("password", ""))
+                    self.headless_checkbox.setChecked(config.get("headless", False))
             except:
                 pass
 
@@ -1332,6 +1402,7 @@ class MainWindow(QMainWindow):
         config = {
             "username": self.username_input.text(),
             "password": self.password_input.text(),
+            "headless": self.headless_checkbox.isChecked(),
         }
 
         try:
@@ -1417,6 +1488,7 @@ class MainWindow(QMainWindow):
         self.worker.mode = self.get_selected_mode()
         self.worker.username = self.username_input.text()
         self.worker.password = self.password_input.text()
+        self.worker.headless_enabled = self.headless_checkbox.isChecked()
 
         # Conectar sinais
         self.worker.progress.connect(self.update_progress)
