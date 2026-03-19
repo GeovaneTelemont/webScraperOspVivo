@@ -188,7 +188,9 @@ class WebScraperWorker(QThread):
         page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
         page.wait_for_selector('xpath=//*[@id="filtroId"]', timeout=10000)
         page.fill('xpath=//*[@id="filtroId"]', str(id_value))
-        page.locator("a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')").click()
+        page.locator("a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')").click(
+            timeout=10000
+        )
 
         # Extrai o status antes de clicar em editar
         status = self._extrair_status_id(page, id_value)
@@ -225,6 +227,9 @@ class WebScraperWorker(QThread):
             # 3. Tenta encontrar "Memória de Cálculo"
             try:
                 page.locator('//a[text()="Memória de Cálculo"]').click(timeout=15000)
+                # esperar tabela carregar antes de continuar
+                page.wait_for_timeout(2000)
+
                 page.wait_for_selector(
                     "table.ott-table-sm.ott-table-nowrap", timeout=15000
                 )
