@@ -1,0 +1,9 @@
+# Limpar builds antigos
+Remove-Item -Path build -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path dist -Recurse -Force -ErrorAction SilentlyContinue
+
+# Gerar executável
+pyinstaller --onefile --windowed --icon="app/img/ico_osp.ico" --add-data "app/img/ico_osp.ico;app/img" --exclude-module PyQt5 --name="webScraperOsp" app\webScraperOsp.py
+
+# Abrir pasta para ver o resultado
+explorer dist
