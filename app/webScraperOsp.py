@@ -686,7 +686,9 @@ class WebScraperWorker(QThread):
                             f"✅ ID {id_value} extraído ({len(dados)} linhas)"
                         )
                     else:
-                        self.message.emit(f"⚠️ Nenhum dado para ID {id_value}")
+                        self.message.emit(
+                            f"⚠️ Nenhum dado encontrado para ID {id_value}"
+                        )
                     break  # Sucesso, sai do loop de retry
                 except Exception as e:
                     self.message.emit(
@@ -744,7 +746,9 @@ class WebScraperWorker(QThread):
                             f"✅ ID {id_value} extraído ({len(dados)} linhas)"
                         )
                     else:
-                        self.message.emit(f"⚠️ Nenhum dado para ID {id_value}")
+                        self.message.emit(
+                            f"⚠️ Nenhum dado encontrado para ID {id_value}"
+                        )
                     break  # Sucesso
                 except Exception as e:
                     self.message.emit(
@@ -794,7 +798,10 @@ class WebScraperWorker(QThread):
                         resultados.append(
                             [id_value, "ERRO", "Nenhum dado retornado", ""]
                         )
-                        self.message.emit(f"⚠️ Nenhum dado para ID {id_value}")
+                        self.message.emit(
+                            f"⚠️ Nenhum dado encontrado para ID {id_value}"
+                        )
+
                     break  # Sucesso
                 except Exception as e:
                     # resultados.append([id_value, "ERRO", str(e), ""]) # Não salva erro, tenta de novo
@@ -865,7 +872,7 @@ class WebScraperWorker(QThread):
                     else:
                         # Adiciona linha vazia para manter o ID
                         resultados.append([id_value] + [""] * 10)
-                        self.message.emit(f"⚠️ ID {id_value}: Nenhum dado")
+                        self.message.emit(f"⚠️ ID {id_value}: Nenhum dado encontrado")
                     break  # Sucesso
                 except Exception as e:
                     self.message.emit(
@@ -889,6 +896,7 @@ class WebScraperWorker(QThread):
         return resultados
 
     def _pesquisar_id_cancelado(self, page, id_value):
+        todos_dados = []
         status = ""
         # Navegação
         page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
@@ -911,21 +919,27 @@ class WebScraperWorker(QThread):
             )
             return [[id_value, "", "", status]]
 
-        page.wait_for_selector('a[title="Serviços"]', timeout=15000)
+        try:
+            page.wait_for_selector('a[title="Serviços"]', timeout=10000)
 
-        # Loop por todos os serviços
-        count_servicos = page.locator('a[title="Serviços"]').count()
-        todos_dados = []
+            # Loop por todos os serviços
+            count_servicos = page.locator('a[title="Serviços"]').count()
+        except TimeoutError:
+            self.message.emit(
+                f"⚠️ ID {id_value}: Não encontrou link de 'Serviços'. Status: '{status}'."
+            )
+            return [[id_value, "", "", "Link de serviço não encontrado"]]
 
         for i in range(count_servicos):
             # Re-localiza o botão do serviço atual
+
             servicos_btn = page.locator('a[title="Serviços"]').nth(i)
             servicos_btn.click(timeout=10000)
 
             # Aguarda carregamento da rede para garantir que os campos carreguem
             try:
                 page.wait_for_load_state("networkidle", timeout=10000)
-            except:
+            except TimeoutError:
                 pass
             page.wait_for_timeout(1000)
 
@@ -966,6 +980,7 @@ class WebScraperWorker(QThread):
         return self._pesquisar_id_cancelado(page, id_value)
 
     def _pesquisar_id_draft(self, page, id_value):
+        todos_dados = []
         status = ""
         page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
         page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
@@ -992,12 +1007,30 @@ class WebScraperWorker(QThread):
                 pass
             return [[id_value, "", "", "", "", "", "", "", "", status]]
 
-        page.wait_for_selector('a[title="Serviços"]', timeout=15000)
+        try:
+            page.wait_for_selector('a[title="Serviços"]', timeout=10000)
 
-        # Loop por todos os serviços
-        count_servicos = page.locator('a[title="Serviços"]').count()
+            # Loop por todos os serviços
+            count_servicos = page.locator('a[title="Serviços"]').count()
 
-        todos_dados = []
+        except TimeoutError:
+            self.message.emit(
+                f"⚠️ ID {id_value}: Link de 'Serviços' não encontrado. Status: '{status}'."
+            )
+            return [
+                [
+                    id_value,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "Link de serviço não encontrado",
+                ]
+            ]
 
         for i in range(count_servicos):
             # Re-localiza o botão do serviço atual
@@ -1062,6 +1095,7 @@ class WebScraperWorker(QThread):
         return todos_dados
 
     def _pesquisar_id_medicao(self, page, id_value):
+        todos_dados = []
         status = ""
         page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
         page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
@@ -1111,10 +1145,28 @@ class WebScraperWorker(QThread):
 
         page.wait_for_timeout(2000)
 
-        page.wait_for_selector('a[title="Serviços"]', timeout=15000)
-
-        count_servicos = page.locator('a[title="Serviços"]').count()
-        todos_dados = []
+        try:
+            # clicar no link de Serviços usando seletor
+            page.wait_for_selector('a[title="Serviços"]', timeout=15000)
+            count_servicos = page.locator('a[title="Serviços"]').count()
+        except TimeoutError:
+            self.message.emit(
+                f"⚠️ ID {id_value}: Link de 'Serviços' não encontrado. Status: '{status}'."
+            )
+            return [
+                [
+                    id_value,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "Link de serviço não encontrado",
+                ]
+            ]
 
         for i in range(count_servicos):
             # Re-localiza o botão do serviço atual
@@ -1184,6 +1236,17 @@ class WebScraperWorker(QThread):
 # ===========================================================
 
 
+def resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1191,13 +1254,11 @@ class MainWindow(QMainWindow):
 
         # Definir ícone da janela
         try:
-            # Constrói o caminho para o ícone relativo à localização do script
-            # Assume a estrutura: project_root/app/script.py e project_root/app/img/icon.ico
-            icon_path = Path(__file__).parent / "img" / "ico_osp.ico"
-            if icon_path.exists():
-                self.setWindowIcon(QIcon(str(icon_path)))
-        except Exception:
-            pass  # Ignora erro se o ícone não for encontrado
+            icon_path = resource_path(os.path.join("app", "img", "ico_osp.ico"))
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QIcon(icon_path))
+        except Exception as e:
+            print(f"Erro ao carregar ícone: {e}")
 
         self.setGeometry(100, 100, 800, 600)
         self.csv_path = ""
@@ -1213,11 +1274,26 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
 
+        # Header Layout (Título + Versão)
+        header_layout = QHBoxLayout()
+
         # Título
         title_label = QLabel("🕸️ OSP Vivo Web Scraper")
         title_label.setStyleSheet("font-size: 24px; font-weight: bold; padding: 10px;")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
+
+        # Versão
+        version_label = QLabel("v1.0.0")
+        version_label.setStyleSheet("font-size: 11px; color: gray; padding: 5px;")
+        version_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
+        )
+
+        header_layout.addWidget(title_label, 1)  # Stretch=1 para centralizar o título
+        header_layout.addWidget(version_label, 0, Qt.AlignmentFlag.AlignTop)
+
+        layout.addLayout(header_layout)
 
         # Seção de configurações
         config_group = QGroupBox("🔧 Configurações")

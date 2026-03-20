@@ -27,3 +27,7 @@ htmlcov/
 
 # Logs e outros arquivos temporários
 pip-log.txt
+
+# Arquivos de build e executáveis grandes
+Executáve_osp/
+*.rar
