@@ -1,3 +1,28 @@
+====================================================================
+                    Explicação dos parâmetros
+====================================================================
+
+
+--onefile: Gera um único arquivo .exe
+
+--windowed: Sem console (modo gráfico)
+
+--icon="app/img/ico_osp.ico": Ícone do executável
+
+--add-data: Inclui o ícone na pasta img para a janela
+
+--exclude-module PyQt5: Exclui o PyQt5 para evitar conflito
+
+--name: Nome do executável
+
+--clean: Limpa arquivos temporários
+
+
+========================================================================
+                              COMANDO
+========================================================================
+
+
 # Limpar builds antigos
 Remove-Item -Path build -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -Path dist -Recurse -Force -ErrorAction SilentlyContinue
