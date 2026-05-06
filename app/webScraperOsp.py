@@ -649,7 +649,7 @@ class WebScraperWorker(QThread):
 
     def _scrap_draft(self, page, df):
         """Função de extração de Draft"""
-        self.message.emit("🧾 Iniciando extração de Draft...")
+        self.message.emit("📊 Iniciando extração de Draft...")
         timestamp = datetime.now().strftime("%d-%m-%Y_%Hh%Mm%Ss")
         arquivo = self.download_path / f"osp_vivo_draft_{timestamp}.xlsx"
         colunas = [
@@ -683,17 +683,39 @@ class WebScraperWorker(QThread):
                     dados = self._pesquisar_id_draft(page, id_value)
                     if dados:
                         resultados.extend(dados)
-                        self.message.emit(
-                            f"✅ ID {id_value} extraído ({len(dados)} linhas)"
-                        )
+                        # Verifica se o retorno é apenas uma linha de erro
+                        if len(dados) == 1 and dados[0][9] in [
+                            "Botão Editar não encontrado!",
+                            "id não encontrado!",
+                        ]:
+                            self.message.emit(f"⚠️ ID {id_value}: {dados[0][9]}")
+                        else:
+                            self.message.emit(
+                                f"✅ ID {id_value} extraído ({len(dados)} linhas)"
+                            )
                     else:
+                        # Nenhum dado encontrado - adiciona linha com status específico
+                        linha_erro = [
+                            id_value,  # ID
+                            "",  # TIPO DE REGISTRO
+                            "",  # CÓDIGO
+                            "",  # DESCRIÇÃO
+                            "",  # QUANTIDADE
+                            "",  # PREÇO UNITÁRIO
+                            "",  # UNIDADE
+                            "",  # PREÇO TOTAL
+                            "",  # CATEGORIA
+                            "Não foi possível carregar os dados da tabela no tempo de execução. Por favor, tente novamente!",  # STATUS
+                        ]
+                        resultados.append(linha_erro)
                         self.message.emit(
-                            f"⚠️ Nenhum dado encontrado para ID {id_value}"
+                            f"⚠️ ID {id_value}: não foi possível carregar os dados da tabela."
                         )
-                    break  # Sucesso, sai do loop de retry
+                    break  # Sucesso
                 except Exception as e:
+                    erro_msg = str(e)
                     self.message.emit(
-                        f"❌ Erro no ID {id_value}: {str(e)}. Tentando novamente..."
+                        f"❌ Erro no ID {id_value}: {erro_msg[:100]}. Tentando novamente..."
                     )
                     self._recover_page_state(page)
 
@@ -765,10 +787,12 @@ class WebScraperWorker(QThread):
                             "",  # UNIDADE
                             "",  # PREÇO TOTAL
                             "",  # CATEGORIA
-                            "Nenhum dado encontrado",  # STATUS
+                            "Não foi possível carregar os dados da tabela no tempo de execução. Por favor, tente novamente!",  # STATUS
                         ]
                         resultados.append(linha_erro)
-                        self.message.emit(f"⚠️ ID {id_value}: Nenhum dado encontrado")
+                        self.message.emit(
+                            f"⚠️ ID {id_value}: não foi possível carregar os dados da tabela."
+                        )
                     break  # Sucesso
                 except Exception as e:
                     erro_msg = str(e)
@@ -1003,41 +1027,256 @@ class WebScraperWorker(QThread):
     def _pesquisar_id_draft(self, page, id_value):
         todos_dados = []
         status = ""
+
         page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
         page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
         page.wait_for_selector('xpath=//*[@id="filtroId"]', timeout=10000)
         page.fill('xpath=//*[@id="filtroId"]', str(id_value))
         page.locator("a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')").click()
 
-        status = self._extrair_status_id(page, id_value)
-
-        try:
-            # Botão Editar com seletor mais robusto
-            page.locator("span.badge.bg-primary", has_text="Editar").first.click(
-                timeout=10000
-            )
-        except TimeoutError:
+        # 3 tentativas para encontrar status e botão editar
+        for tentativa in range(1, 4):
             self.message.emit(
-                f"⚠️ ID {id_value}: Botão 'Editar' não encontrado. Status: '{status}'."
+                f"🔄 ID {id_value}: Tentativa {tentativa} de 3 - Verificando botão Editar..."
             )
+
             try:
-                page.click('//*[@id="ott-sidebar-collapse"]')
-                page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
-                page.wait_for_load_state("networkidle", timeout=15000)
-            except:
-                pass
-            return [[id_value, "", "", "", "", "", "", "", "", status]]
+                status = self._extrair_status_id(page, id_value)
+                self.message.emit(f"📌 ID {id_value}: Status encontrado: '{status}'")
+
+                botao_editar = page.locator("span.badge.bg-primary", has_text="Editar")
+                if botao_editar.count() > 0:
+                    botao_editar.click(timeout=10000)
+                    self.message.emit(
+                        f"✅ ID {id_value}: Botão Editar clicado com sucesso na tentativa {tentativa}"
+                    )
+                    break
+                else:
+                    self.message.emit(
+                        f"⚠️ ID {id_value}: Tentativa {tentativa} - Botão Editar não encontrado na página"
+                    )
+                    if tentativa == 3:
+                        self.message.emit(
+                            f"❌ ID {id_value}: Botão Editar não encontrado após 3 tentativas!"
+                        )
+                        return [
+                            [
+                                id_value,
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                f"Botão Editar não encontrado! Status: {status}",
+                            ]
+                        ]
+                    page.wait_for_timeout(1000)
+                    continue
+
+            except Exception as e:
+                self.message.emit(
+                    f"❌ ID {id_value}: Tentativa {tentativa} falhou - Erro: {str(e)[:100]}"
+                )
+                if tentativa == 3:
+                    try:
+                        test_status = self._extrair_status_id(page, id_value)
+                        self.message.emit(
+                            f"❌ ID {id_value}: ID encontrado mas botão Editar não encontrado após 3 tentativas!"
+                        )
+                        return [
+                            [
+                                id_value,
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                f"Botão Editar não encontrado! Status: {test_status}",
+                            ]
+                        ]
+                    except:
+                        self.message.emit(
+                            f"❌ ID {id_value}: ID não encontrado na busca após 3 tentativas!"
+                        )
+                        return [
+                            [
+                                id_value,
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "id não encontrado!",
+                            ]
+                        ]
+                page.wait_for_timeout(1000)
 
         try:
-            page.wait_for_selector('a[title="Serviços"]', timeout=10000)
+            # Aguarda um pouco após clicar no botão Editar
+            page.wait_for_timeout(1500)
 
-            # Loop por todos os serviços
-            count_servicos = page.locator('a[title="Serviços"]').count()
+            # Clica na aba Draft
+            draft = page.get_by_text("Draft", exact=True)
+            draft.wait_for(state="visible", timeout=15000)
+            draft.click(timeout=5000)
 
-        except TimeoutError:
+            # Aguarda carregamento da aba
+            page.wait_for_timeout(1500)
+
+            # Conta os serviços
+            servicos = page.locator('a[title="Serviços"]')
+            count_servicos = servicos.count()
+
+            # Se não encontrou, tenta por XPath
+            if count_servicos == 0:
+                servicos = page.locator('//a[@title="Serviços"]')
+                count_servicos = servicos.count()
+
+            # Se ainda não encontrou, tenta pelo ícone
+            if count_servicos == 0:
+                servicos = page.locator("a:has(i.oi-account-login)")
+                count_servicos = servicos.count()
+
             self.message.emit(
-                f"⚠️ ID {id_value}: Link de 'Serviços' não encontrado. Status: '{status}'."
+                f"📊 ID {id_value}: Encontrados {count_servicos} serviço(s)"
             )
+
+            if count_servicos == 0:
+                self.message.emit(f"⚠️ ID {id_value}: Nenhum serviço encontrado!")
+                return [
+                    [
+                        id_value,
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        f"Nenhum serviço encontrado! Status: {status}",
+                    ]
+                ]
+
+            for i in range(count_servicos):
+                self.message.emit(
+                    f"🔍 ID {id_value}: Processando serviço {i + 1}/{count_servicos}"
+                )
+
+                # Clica no serviço
+                servicos.nth(i).click(timeout=10000)
+
+                # Aguarda as tabelas carregarem (tempo balanceado)
+                page.wait_for_timeout(2000)
+
+                # Verifica se tem tabelas
+                tabelas = page.locator("table").all()
+
+                if len(tabelas) == 0:
+                    self.message.emit(
+                        f"⚠️ ID {id_value}: Nenhuma tabela no serviço {i + 1}, tentando aguardar..."
+                    )
+                    page.wait_for_timeout(2000)
+                    tabelas = page.locator("table").all()
+
+                    if len(tabelas) == 0:
+                        self.message.emit(
+                            f"⚠️ ID {id_value}: Continuando sem tabelas no serviço {i + 1}"
+                        )
+                        if i < count_servicos - 1:
+                            page.go_back()
+                            page.wait_for_timeout(1000)
+                            draft = page.get_by_text("Draft", exact=True)
+                            draft.click(timeout=5000)
+                            page.wait_for_timeout(1000)
+                        continue
+
+                # Extração das tabelas
+                for tabela in tabelas:
+                    categoria = self._extrair_categoria_tabela(tabela)
+
+                    # Aguarda as linhas da tabela
+                    page.wait_for_timeout(50)
+
+                    linhas = tabela.locator("tbody tr").all()
+
+                    if len(linhas) == 0:
+                        self.message.emit(
+                            f"⚠️ ID {id_value}: Nenhuma linha na tabela do serviço {i + 1}"
+                        )
+                        continue
+
+                    for linha in linhas:
+                        tds = linha.locator("td").all()
+                        valores = [td.text_content().strip() for td in tds]
+
+                        if len(valores) >= 6:
+                            tipo_registro = self._determinar_tipo_registro(
+                                categoria,
+                                valores[4] if len(valores) > 4 else "",
+                                valores[1] if len(valores) > 1 else "",
+                            )
+
+                            dados_linha = [
+                                id_value,  # ID
+                                tipo_registro,  # TIPO DE REGISTRO
+                                valores[0],  # CÓDIGO
+                                valores[1],  # DESCRIÇÃO
+                                valores[2],  # QUANTIDADE
+                                valores[3],  # PREÇO UNITÁRIO
+                                valores[4] if len(valores) > 4 else "",  # UNIDADE
+                                valores[5] if len(valores) > 5 else "",  # PREÇO TOTAL
+                                categoria,  # CATEGORIA
+                                status,  # STATUS
+                            ]
+                            todos_dados.append(dados_linha)
+
+                # Volta para a lista de serviços se não for o último
+                if i < count_servicos - 1:
+                    page.go_back()
+                    page.wait_for_timeout(1000)
+                    draft = page.get_by_text("Draft", exact=True)
+                    draft.wait_for(state="visible", timeout=5000)
+                    draft.click(timeout=5000)
+                    page.wait_for_timeout(1000)
+
+            # Volta ao menu
+            page.click('//*[@id="ott-sidebar-collapse"]')
+            page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
+            page.wait_for_load_state("networkidle", timeout=10000)
+
+        except Exception as e:
+            erro_msg = str(e)
+            self.message.emit(
+                f"❌ ID {id_value}: Erro durante extração - {erro_msg[:100]}"
+            )
+            if len(todos_dados) == 0:
+                return [
+                    [
+                        id_value,
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        f"Nenhum dado encontrado! Status: {status}",
+                    ]
+                ]
+
+        if len(todos_dados) == 0:
+            self.message.emit(f"⚠️ ID {id_value}: NENHUM dado extraído!")
             return [
                 [
                     id_value,
@@ -1049,70 +1288,13 @@ class WebScraperWorker(QThread):
                     "",
                     "",
                     "",
-                    "Link de serviço não encontrado",
+                    f"Nenhum dado encontrado! Status: {status}",
                 ]
             ]
 
-        for i in range(count_servicos):
-            # Re-localiza o botão do serviço atual
-            servicos_btn = page.locator('a[title="Serviços"]').nth(i)
-            servicos_btn.click(timeout=10000)
-
-            # Aguarda carregamento da rede e das tabelas
-            try:
-                page.wait_for_load_state("networkidle", timeout=10000)
-            except:
-                pass
-            page.wait_for_selector("table tbody tr", timeout=15000)
-            # Pequena pausa extra para garantir renderização completa do Angular
-            page.wait_for_timeout(1000)
-
-            # Extração de tabelas com categoria correta
-            tabelas = page.locator("table").all()
-
-            for tabela in tabelas:
-                # Extrai categoria da tabela
-                categoria = self._extrair_categoria_tabela(tabela)
-
-                # Extrai linhas da tabela
-                linhas = tabela.locator("tbody tr").all()
-                for linha in linhas:
-                    tds = linha.locator("td").all()
-                    # Usa text_content para garantir leitura mesmo se oculto/aninhado
-                    valores = [td.text_content().strip() for td in tds]
-
-                    if len(valores) >= 6:
-                        # Determina tipo de registro
-                        tipo_registro = self._determinar_tipo_registro(
-                            categoria,
-                            valores[4] if len(valores) > 4 else "",
-                            valores[1] if len(valores) > 1 else "",
-                        )
-
-                        # Monta a linha de dados
-                        dados_linha = [
-                            id_value,  # ID
-                            tipo_registro,  # TIPO DE REGISTRO
-                            valores[0],  # CÓDIGO
-                            valores[1],  # DESCRIÇÃO
-                            valores[2],  # QUANTIDADE
-                            valores[3],  # PREÇO UNITÁRIO
-                            valores[4] if len(valores) > 4 else "",  # UNIDADE
-                            valores[5] if len(valores) > 5 else "",  # PREÇO TOTAL
-                            categoria,  # CATEGORIA (extraída da página)
-                            status,  # STATUS
-                        ]
-                        todos_dados.append(dados_linha)
-            # Volta para a lista de serviços se houver mais de um
-            if count_servicos > 1 and i < count_servicos - 1:
-                page.go_back()
-                page.wait_for_load_state("networkidle", timeout=15000)
-
-        # Volta ao menu
-        page.click('//*[@id="ott-sidebar-collapse"]')
-        page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
-        page.wait_for_load_state("networkidle", timeout=15000)
-
+        self.message.emit(
+            f"✅ ID {id_value}: Total extraído: {len(todos_dados)} linhas"
+        )
         return todos_dados
 
     def _pesquisar_id_medicao(self, page, id_value):
@@ -1237,6 +1419,8 @@ class WebScraperWorker(QThread):
                 # Extração de tabelas com categoria correta
                 tabelas = page.locator("table").all()
                 for tabela in tabelas:
+                    page.wait_for_timeout(50)
+
                     # Extrai categoria da tabela
                     categoria = self._extrair_categoria_tabela(tabela)
                     # Extrai linhas da tabela
@@ -1494,7 +1678,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title_label)
 
         # Versão
-        version_label = QLabel("v1.0.0")
+        version_label = QLabel("v1.0.1")
         version_label.setStyleSheet("font-size: 11px; color: gray; padding: 5px;")
         version_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
