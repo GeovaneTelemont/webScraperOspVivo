@@ -1097,6 +1097,93 @@ class WebScraperWorker(QThread):
     def _pesquisar_id_medicao(self, page, id_value):
         todos_dados = []
         status = ""
+
+        page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
+        page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
+        page.wait_for_selector('xpath=//*[@id="filtroId"]', timeout=10000)
+        page.fill('xpath=//*[@id="filtroId"]', str(id_value))
+        page.locator("a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')").click()
+
+        try:
+            status = self._extrair_status_id(page, id_value)
+            page.locator("span.badge.bg-primary", has_text="Editar").click(
+                timeout=10000
+            )
+
+            medicao = page.get_by_text("Medição", exact=True)
+
+            medicao.click(timeout=2000)
+
+            print(status)
+
+            servico = page.locator('a[title="Serviços"]').count()
+
+            for i in range(1, servico):
+                btn_servico = page.locator('a[title="Serviços"]').nth(i)
+                btn_servico.click(timeout=10000)
+
+                page.wait_for_selector("table tbody tr", timeout=15000)
+                page.wait_for_timeout(1000)
+
+                # Extração de tabelas com categoria correta
+                tabelas = page.locator("table").all()
+                for tabela in tabelas:
+                    # Extrai categoria da tabela
+                    categoria = self._extrair_categoria_tabela(tabela)
+                    # Extrai linhas da tabela
+                    linhas = tabela.locator("tbody tr").all()
+                    for linha in linhas:
+                        tds = linha.locator("td").all()
+                        valores = [td.text_content().strip() for td in tds]
+
+                        if len(valores) >= 6:
+                            # Determina tipo de registro
+                            tipo_registro = self._determinar_tipo_registro(
+                                categoria,
+                                valores[4] if len(valores) > 4 else "",
+                                valores[1] if len(valores) > 1 else "",
+                            )
+
+                            # Monta a linha de dados
+                            dados_linha = [
+                                id_value,  # ID
+                                tipo_registro,  # TIPO DE REGISTRO
+                                valores[0],  # CÓDIGO
+                                valores[1],  # DESCRIÇÃO
+                                valores[2],  # QUANTIDADE
+                                valores[3],  # PREÇO UNITÁRIO
+                                valores[4] if len(valores) > 4 else "",  # UNIDADE
+                                valores[5] if len(valores) > 5 else "",  # PREÇO TOTAL
+                                categoria,  # CATEGORIA (extraída da página)
+                                status,  # STATUS
+                            ]
+                            todos_dados.append(dados_linha)
+
+                page.go_back()
+                medicao = page.get_by_text("Medição", exact=True)
+
+                medicao.click(timeout=2000)
+        except:
+            return [
+                [
+                    id_value,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "Botão Editar não encontrado",
+                ]
+            ]
+
+        return todos_dados
+
+    def _pesquisar_id_medicao_antigo_backp(self, page, id_value):
+        todos_dados = []
+        status = ""
         page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
         page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
         page.wait_for_selector('xpath=//*[@id="filtroId"]', timeout=10000)
