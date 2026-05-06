@@ -9,6 +9,7 @@ from time import sleep
 
 import pandas as pd
 from PyQt6.QtCore import *
+from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import *
 from PyQt6.QtWidgets import *
 
@@ -742,17 +743,37 @@ class WebScraperWorker(QThread):
                     dados = self._pesquisar_id_medicao(page, id_value)
                     if dados:
                         resultados.extend(dados)
-                        self.message.emit(
-                            f"✅ ID {id_value} extraído ({len(dados)} linhas)"
-                        )
+                        # Verifica se o retorno é apenas uma linha de erro
+                        if len(dados) == 1 and dados[0][9] in [
+                            "Botão Editar não encontrado!",
+                            "id não encontrado!",
+                        ]:
+                            self.message.emit(f"⚠️ ID {id_value}: {dados[0][9]}")
+                        else:
+                            self.message.emit(
+                                f"✅ ID {id_value} extraído ({len(dados)} linhas)"
+                            )
                     else:
-                        self.message.emit(
-                            f"⚠️ Nenhum dado encontrado para ID {id_value}"
-                        )
+                        # Nenhum dado encontrado - adiciona linha com status específico
+                        linha_erro = [
+                            id_value,  # ID
+                            "",  # TIPO DE REGISTRO
+                            "",  # CÓDIGO
+                            "",  # DESCRIÇÃO
+                            "",  # QUANTIDADE
+                            "",  # PREÇO UNITÁRIO
+                            "",  # UNIDADE
+                            "",  # PREÇO TOTAL
+                            "",  # CATEGORIA
+                            "Nenhum dado encontrado",  # STATUS
+                        ]
+                        resultados.append(linha_erro)
+                        self.message.emit(f"⚠️ ID {id_value}: Nenhum dado encontrado")
                     break  # Sucesso
                 except Exception as e:
+                    erro_msg = str(e)
                     self.message.emit(
-                        f"❌ Erro no ID {id_value}: {str(e)}. Tentando novamente..."
+                        f"❌ Erro no ID {id_value}: {erro_msg[:100]}. Tentando novamente..."
                     )
                     self._recover_page_state(page)
 
@@ -1104,17 +1125,105 @@ class WebScraperWorker(QThread):
         page.fill('xpath=//*[@id="filtroId"]', str(id_value))
         page.locator("a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')").click()
 
-        try:
-            status = self._extrair_status_id(page, id_value)
-            page.locator("span.badge.bg-primary", has_text="Editar").click(
-                timeout=10000
+        # 3 tentativas para encontrar status e botão editar
+        for tentativa in range(1, 4):
+            self.message.emit(
+                f"🔄 ID {id_value}: Tentativa {tentativa} de 3 - Verificando botão Editar..."
             )
 
+            try:
+                status = self._extrair_status_id(page, id_value)
+                self.message.emit(f"📌 ID {id_value}: Status encontrado: '{status}'")
+
+                # Tenta encontrar e clicar no botão editar
+                botao_editar = page.locator("span.badge.bg-primary", has_text="Editar")
+                if botao_editar.count() > 0:
+                    botao_editar.click(timeout=10000)
+                    self.message.emit(
+                        f"✅ ID {id_value}: Botão Editar clicado com sucesso na tentativa {tentativa}"
+                    )
+                    break  # Sai do loop se conseguiu clicar
+                else:
+                    self.message.emit(
+                        f"⚠️ ID {id_value}: Tentativa {tentativa} - Botão Editar não encontrado na página"
+                    )
+                    if tentativa == 3:
+                        self.message.emit(
+                            f"❌ ID {id_value}: Botão Editar não encontrado após 3 tentativas!"
+                        )
+                        return [
+                            [
+                                id_value,
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                f"Botão Editar não encontrado! Status: {status}",
+                            ]
+                        ]
+                    self.message.emit(
+                        f"⏳ ID {id_value}: Aguardando 1 segundo antes da próxima tentativa..."
+                    )
+                    page.wait_for_timeout(1000)
+                    continue
+
+            except Exception as e:
+                self.message.emit(
+                    f"❌ ID {id_value}: Tentativa {tentativa} falhou - Erro: {str(e)[:100]}"
+                )
+                if tentativa == 3:
+                    # Verifica qual foi o erro específico
+                    try:
+                        test_status = self._extrair_status_id(page, id_value)
+                        self.message.emit(
+                            f"❌ ID {id_value}: ID encontrado mas botão Editar não encontrado após 3 tentativas!"
+                        )
+                        return [
+                            [
+                                id_value,
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                f"Botão Editar não encontrado! Status: {test_status}",
+                            ]
+                        ]
+                    except:
+                        self.message.emit(
+                            f"❌ ID {id_value}: ID não encontrado na busca após 3 tentativas!"
+                        )
+                        return [
+                            [
+                                id_value,
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "id não encontrado!",
+                            ]
+                        ]
+                self.message.emit(
+                    f"⏳ ID {id_value}: Aguardando 1 segundo antes da próxima tentativa..."
+                )
+                page.wait_for_timeout(1000)
+
+        try:
+            # Clica na aba Medição (exatamente como você faz)
             medicao = page.get_by_text("Medição", exact=True)
-
-            medicao.click(timeout=2000)
-
-            print(status)
+            medicao.wait_for(state="visible", timeout=60000)
+            medicao.click(timeout=5000)
 
             servico = page.locator('a[title="Serviços"]').count()
 
@@ -1160,24 +1269,31 @@ class WebScraperWorker(QThread):
                             todos_dados.append(dados_linha)
 
                 page.go_back()
+                # Clica novamente na aba Medição após voltar (exatamente como você faz)
                 medicao = page.get_by_text("Medição", exact=True)
+                medicao.wait_for(state="visible", timeout=60000)
+                medicao.click(timeout=5000)
 
-                medicao.click(timeout=2000)
-        except:
-            return [
-                [
-                    id_value,
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "Botão Editar não encontrado",
+        except Exception as e:
+            erro_msg = str(e)
+            self.message.emit(
+                f"❌ ID {id_value}: Erro durante extração - {erro_msg[:100]}"
+            )
+            if len(todos_dados) == 0:
+                return [
+                    [
+                        id_value,
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        f"Erro na extração: {erro_msg[:50]} | Status: {status}",
+                    ]
                 ]
-            ]
 
         return todos_dados
 
@@ -1339,6 +1455,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("OSP Vivo Web Scraper")
 
+        # Variáveis para estimativa de tempo
+        self.tempo_inicio = None
+        self.total_ids = 0
+        self.processados = 0
+        self.tempo_restante_label = None
+        self.timer_estimativa = None
+
         # Definir ícone da janela
         try:
             icon_path = resource_path(os.path.join("app", "img", "ico_osp.ico"))
@@ -1475,6 +1598,30 @@ class MainWindow(QMainWindow):
         self.log_text.setMaximumHeight(200)
         log_layout.addWidget(self.log_text)
 
+        # Layout para botões de log e estimativa
+        log_buttons_layout = QHBoxLayout()
+
+        self.clear_logs_btn = QPushButton("🗑️ Limpar Logs")
+        self.clear_logs_btn.clicked.connect(self.clear_logs)
+
+        self.download_log_btn = QPushButton("📥 Baixar Log")
+        self.download_log_btn.clicked.connect(self.download_log)
+        self.download_log_btn.setToolTip("Salvar o conteúdo do log em um arquivo .txt")
+
+        # Label para estimativa de tempo (alinhado à direita)
+        self.tempo_restante_label = QLabel("⏱️ Estimativa: Aguardando início...")
+        self.tempo_restante_label.setStyleSheet(
+            "color: #666; font-weight: bold; padding: 5px;"
+        )
+        self.tempo_restante_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        log_buttons_layout.addWidget(self.clear_logs_btn)
+        log_buttons_layout.addWidget(self.download_log_btn)
+        log_buttons_layout.addStretch()
+        log_buttons_layout.addWidget(self.tempo_restante_label)
+
+        log_layout.addLayout(log_buttons_layout)
+
         log_group.setLayout(log_layout)
         layout.addWidget(log_group)
 
@@ -1494,12 +1641,8 @@ class MainWindow(QMainWindow):
             "background-color: #f44336; color: white; padding: 10px;"
         )
 
-        self.clear_logs_btn = QPushButton("🗑️ Limpar Logs")
-        self.clear_logs_btn.clicked.connect(self.clear_logs)
-
         action_layout.addWidget(self.start_btn)
         action_layout.addWidget(self.stop_btn)
-        action_layout.addWidget(self.clear_logs_btn)
 
         layout.addLayout(action_layout)
 
@@ -1636,11 +1779,24 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.StandardButton.No:
                 return
 
+        # Contar total de IDs para estimativa PRIMEIRO
+        try:
+            df = pd.read_csv(self.csv_path, sep=";", encoding="utf-8")
+            self.total_ids = len(df)
+            self.processados = 0
+            self.tempo_restante_label.setText(
+                f"⏱️ Estimativa: 0/{self.total_ids} (0%) | Calculando..."
+            )
+        except Exception as e:
+            self.log_message(f"⚠️ Não foi possível calcular estimativa: {e}")
+            self.total_ids = 0
+
         # Desabilitar controles durante execução
         self.start_btn.setEnabled(False)
         self.select_file_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.clear_logs_btn.setEnabled(False)
+        self.download_log_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.last_generated_file = None
@@ -1659,6 +1815,10 @@ class MainWindow(QMainWindow):
         self.worker.error.connect(self.show_error)
         self.worker.finished.connect(self.on_finished)
         self.worker.data_saved.connect(self.on_data_saved)
+
+        # Iniciar estimativa de tempo
+        if self.total_ids > 0:
+            self.iniciar_estimativa(self.total_ids)
 
         # Iniciar thread
         self.worker.start()
@@ -1684,6 +1844,8 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             if self.worker:
                 self.worker.stop()
+                self.parar_estimativa()  # Adicione esta linha
+                self.tempo_restante_label.setText("⏱️ Processo interrompido!")
                 self.log_message(
                     "🛑 Solicitada parada... Aguarde a finalização da tarefa atual."
                 )
@@ -1695,8 +1857,17 @@ class MainWindow(QMainWindow):
                 self.stop_btn.setEnabled(False)
 
     def update_progress(self, value):
-        """Atualiza barra de progresso"""
+        """Atualiza barra de progresso e estimativa"""
         self.progress_bar.setValue(value)
+        # Atualiza a quantidade processada para a estimativa
+        if self.total_ids > 0:
+            self.processados = int((value / 100) * self.total_ids)
+            # Log de debug a cada 10%
+            if value % 10 == 0:
+                self.log_message(
+                    f"📊 Progresso: {value}% - {self.processados}/{self.total_ids} IDs processados"
+                )
+            self.atualizar_estimativa()
 
     def log_message(self, message):
         """Adiciona mensagem ao log"""
@@ -1720,7 +1891,10 @@ class MainWindow(QMainWindow):
         self.select_file_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.clear_logs_btn.setEnabled(True)
+        self.download_log_btn.setEnabled(True)
         self.progress_bar.setValue(0)
+        self.parar_estimativa()  # Adicione esta linha
+        self.tempo_restante_label.setText("⏱️ Processo finalizado!")
         self.log_message("✅ Processo finalizado!")
 
         # Perguntar se deseja abrir a pasta de downloads
@@ -1792,6 +1966,110 @@ class MainWindow(QMainWindow):
                 event.ignore()
         else:
             event.accept()
+
+    def download_log(self):
+        """Baixa o conteúdo do log para um arquivo txt"""
+        if not self.log_text.toPlainText().strip():
+            QMessageBox.warning(self, "Aviso", "Não há conteúdo no log para salvar!")
+            return
+
+        # Abrir diálogo para salvar arquivo
+        timestamp = QDateTime.currentDateTime().toString("yyyy-MM-dd_HH-mm-ss")
+        default_name = f"log_osp_scraper_{timestamp}.txt"
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Salvar Log",
+            default_name,
+            "Arquivos de Texto (*.txt);;Todos os Arquivos (*.*)",
+        )
+
+        if file_path:
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(self.log_text.toPlainText())
+                self.log_message(f"✅ Log salvo com sucesso em: {file_path}")
+                QMessageBox.information(self, "Sucesso", f"Log salvo em:\n{file_path}")
+            except Exception as e:
+                self.log_message(f"❌ Erro ao salvar log: {str(e)}")
+                QMessageBox.critical(
+                    self, "Erro", f"Erro ao salvar o arquivo:\n{str(e)}"
+                )
+
+    def iniciar_estimativa(self, total_ids):
+        """Inicia a estimativa de tempo"""
+        import time
+
+        self.tempo_inicio = time.time()
+        self.total_ids = total_ids
+        self.processados = 0
+
+        # Para qualquer timer existente
+        if self.timer_estimativa:
+            self.timer_estimativa.stop()
+
+        # Atualiza a cada 5 segundos
+        self.timer_estimativa = QTimer()
+        self.timer_estimativa.timeout.connect(self.atualizar_estimativa)
+        self.timer_estimativa.start(5000)  # Atualiza a cada 5 segundos
+
+        self.tempo_restante_label.setText(
+            f"⏱️ Estimativa: 0/{total_ids} (0%) | Calculando..."
+        )
+
+        # Log para debug
+        self.log_message(f"📊 Estimativa iniciada: {total_ids} IDs para processar")
+
+    def atualizar_estimativa(self):
+        """Atualiza a estimativa de tempo restante"""
+        import time
+
+        if self.tempo_inicio is None or self.total_ids == 0:
+            return
+
+        # Se não processou nenhum ainda, mostra apenas contagem
+        if self.processados == 0:
+            self.tempo_restante_label.setText(
+                f"⏱️ 0/{self.total_ids} (0%) | Aguardando primeiro ID..."
+            )
+            return
+
+        tempo_decorrido = time.time() - self.tempo_inicio
+        media_por_id = tempo_decorrido / self.processados
+        ids_restantes = self.total_ids - self.processados
+        tempo_restante_segundos = media_por_id * ids_restantes
+
+        # Formata o tempo restante
+        if tempo_restante_segundos > 3600:
+            horas = int(tempo_restante_segundos // 3600)
+            minutos = int((tempo_restante_segundos % 3600) // 60)
+            tempo_formatado = f"{horas}h {minutos}min"
+        elif tempo_restante_segundos > 60:
+            minutos = int(tempo_restante_segundos // 60)
+            segundos = int(tempo_restante_segundos % 60)
+            tempo_formatado = f"{minutos}min {segundos}s"
+        else:
+            tempo_formatado = f"{int(tempo_restante_segundos)}s"
+
+        porcentagem = (self.processados / self.total_ids) * 100
+
+        self.tempo_restante_label.setText(
+            f"⏱️ {self.processados}/{self.total_ids} ({porcentagem:.1f}%) | "
+            f"Tempo restante: ~{tempo_formatado}"
+        )
+
+    def parar_estimativa(self):
+        """Para a estimativa de tempo"""
+        if self.timer_estimativa:
+            self.timer_estimativa.stop()
+            self.timer_estimativa = None
+
+        self.tempo_inicio = None
+
+    def atualizar_progresso_estimativa(self, current, total):
+        """Atualiza o progresso para a estimativa"""
+        self.processados = current
+        self.atualizar_estimativa()
 
 
 # ===========================================================
