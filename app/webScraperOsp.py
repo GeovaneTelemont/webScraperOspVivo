@@ -1163,7 +1163,7 @@ class WebScraperWorker(QThread):
                         "",
                         "",
                         "",
-                        f"Nenhum serviço encontrado! Status: {status}",
+                        f"Nenhum serviço encontrado em tempo de execução! Status: {status}. Tente novamente.",
                     ]
                 ]
 
@@ -1271,7 +1271,7 @@ class WebScraperWorker(QThread):
                         "",
                         "",
                         "",
-                        f"Nenhum dado encontrado! Status: {status}",
+                        f"Nenhum dado encontrado por tempor de execução! Status: {status}. Tente novamente.",
                     ]
                 ]
 
@@ -1288,7 +1288,7 @@ class WebScraperWorker(QThread):
                     "",
                     "",
                     "",
-                    f"Nenhum dado encontrado! Status: {status}",
+                    f"Nenhum dado encontrado por tempor de execução! Status: {status}. Tente novamente.",
                 ]
             ]
 
