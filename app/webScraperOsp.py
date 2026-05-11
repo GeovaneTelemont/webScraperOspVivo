@@ -183,7 +183,7 @@ class WebScraperWorker(QThread):
         except Exception as e:
             self.message.emit(f"⚠️ Falha na recuperação da página: {str(e)}")
 
-    def _scrap_memoria_calculo(self, page, id_value):
+    def _scrap_memoria_calculo_draft(self, page, id_value):
         """Extrai todos os dados da memória de cálculo com paginação"""
         # 1. Navegação inicial
         page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
@@ -224,6 +224,196 @@ class WebScraperWorker(QThread):
         todos_dados = []
 
         for servico_idx, servico in enumerate(serviços):
+            servico.click()
+
+            # 3. Tenta encontrar "Memória de Cálculo"
+            try:
+                page.locator('//a[text()="Memória de Cálculo"]').click(timeout=15000)
+                # esperar tabela carregar antes de continuar
+                page.wait_for_timeout(2000)
+
+                page.wait_for_selector(
+                    "table.ott-table-sm.ott-table-nowrap", timeout=15000
+                )
+                self.message.emit(
+                    f"✅ ID {id_value}: Serviço {servico_idx + 1} - Memória de Cálculo"
+                )
+            except:
+                self.message.emit(
+                    f"⚠️ ID {id_value}: Serviço {servico_idx + 1} - Não encontrou Memória de Cálculo"
+                )
+                if len(serviços) > 1:
+                    page.go_back()
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                continue
+
+            # 4. Tenta mostrar 50 itens
+            try:
+                page.select_option(
+                    "select.custom-select", label="50 itens", timeout=5000
+                )
+                page.wait_for_load_state("networkidle", timeout=15000)
+                self.message.emit(f"📊 ID {id_value}: Selecionou '50 itens'")
+            except:
+                self.message.emit(f"ℹ️ ID {id_value}: Sem select ou já está em 50 itens")
+
+            # 5. EXTRAI TODAS AS PÁGINAS
+            pagina = 1
+            while True:
+                self.message.emit(f"   📄 ID {id_value}: Página {pagina}")
+
+                # Procura a tabela específica
+                tabela = page.locator("table.ott-table-sm.ott-table-nowrap").first
+
+                if tabela.count() > 0:
+                    # Extrai todas as linhas da tabela atual
+                    linhas = tabela.locator("tbody tr").all()
+
+                    for linha in linhas:
+                        # Pega todas as células da linha
+                        celulas = linha.locator("td").all()
+
+                        # Verifica se tem pelo menos 9 colunas
+                        if len(celulas) >= 9:
+                            # Extrai texto de cada célula
+                            valores = []
+                            for celula in celulas:
+                                texto = celula.text_content().strip()
+                                # Remove R$ dos valores monetários
+                                if "R$" in texto:
+                                    texto = texto.replace("R$", "").strip()
+                                valores.append(texto)
+
+                            # Garante que temos exatamente 9 valores
+                            while len(valores) < 9:
+                                valores.append("")
+
+                            # Monta a linha completa: ID + 9 valores da tabela
+                            linha_completa = [id_value] + valores + [status]
+                            todos_dados.append(linha_completa)
+
+                    self.message.emit(
+                        f"   ✓ Extraiu {len(linhas)} linhas da página {pagina}"
+                    )
+                else:
+                    self.message.emit(f"   ⚠️ Tabela não encontrada na página {pagina}")
+                    # Tenta buscar por outra classe
+                    try:
+                        tabela_alt = page.locator("table.table-bordered").first
+                        if tabela_alt.count() > 0:
+                            linhas = tabela_alt.locator("tbody tr").all()
+                            for linha in linhas:
+                                celulas = linha.locator("td").all()
+                                if len(celulas) >= 9:
+                                    valores = [
+                                        c.text_content().strip().replace("R$", "")
+                                        for c in celulas
+                                    ]
+                                    while len(valores) < 9:
+                                        valores.append("")
+                                    todos_dados.append([id_value] + valores + [status])
+                            self.message.emit(
+                                f"   ✓ Extraiu {len(linhas)} linhas (tabela alternativa)"
+                            )
+                    except:
+                        pass
+
+                # 6. VERIFICA SE TEM PRÓXIMA PÁGINA
+                tem_proxima = False
+                try:
+                    next_btns = page.locator(
+                        '//li[not(contains(@class, "disabled"))]//a[@aria-label="Next"]'
+                    )
+
+                    for i in range(next_btns.count()):
+                        btn = next_btns.nth(i)
+                        if btn.is_visible():
+                            tem_proxima = True
+                            break
+                except:
+                    tem_proxima = False
+
+                # 7. SE NÃO TEM PRÓXIMA PÁGINA, PARA
+                if not tem_proxima:
+                    self.message.emit(f"   🏁 Última página ({pagina})")
+                    break
+
+                # 8. VAI PARA PRÓXIMA PÁGINA
+                try:
+                    page.locator(
+                        '//li[not(contains(@class, "disabled"))]//a[@aria-label="Next"]'
+                    ).first.click()
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                    pagina += 1
+                except Exception as e:
+                    self.message.emit(f"   ❌ Erro ao mudar página: {str(e)}")
+                    break
+
+            # 9. VOLTA PARA LISTA DE SERVIÇOS (se houver mais de um)
+            if len(serviços) > 1 and servico_idx < len(serviços) - 1:
+                page.go_back()
+                page.wait_for_load_state("networkidle", timeout=15000)
+
+        # 10. VOLTA AO MENU PRINCIPAL
+        page.click('//*[@id="ott-sidebar-collapse"]')
+        page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
+        page.wait_for_load_state("networkidle", timeout=15000)
+
+        self.message.emit(
+            f"✅ ID {id_value}: Finalizado - {len(todos_dados)} linhas extraídas"
+        )
+        return todos_dados
+
+    def _scrap_memoria_calculo_medicao(self, page, id_value):
+        """Extrai todos os dados da memória de cálculo com paginação"""
+        # 1. Navegação inicial
+        page.click('//*[@id="ott-sidebar-collapse"]', timeout=10000)
+        page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[3]/a', timeout=10000)
+        page.wait_for_selector('xpath=//*[@id="filtroId"]', timeout=10000)
+        page.fill('xpath=//*[@id="filtroId"]', str(id_value))
+        page.locator("a.btn.btn-primary.btn-sm.btn-block:has-text('Buscar')").click(
+            timeout=10000
+        )
+
+        # Extrai o status antes de clicar em editar
+        status = self._extrair_status_id(page, id_value)
+
+        try:
+            # Tenta clicar no botão "Editar"
+            page.locator("span.badge.bg-primary:has-text('Editar')").click(
+                timeout=10000
+            )
+            medicao = page.get_by_text("Medição", exact=True)
+            medicao.wait_for(state="visible", timeout=60000)
+            medicao.click(timeout=5000)
+
+            page.wait_for_selector('a[title="Serviços"]', timeout=15000)
+
+        except TimeoutError:
+            # Se o botão não for encontrado, registra o status e retorna
+            self.message.emit(
+                f"⚠️ ID {id_value}: Botão 'Editar' não encontrado. Status: '{status}'."
+            )
+            # Volta ao menu principal para o próximo ID
+            try:
+                page.click('//*[@id="ott-sidebar-collapse"]')
+                page.click('//*[@id="ott-sidebar"]/div[3]/ul/li[1]/a')
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception as nav_error:
+                self.message.emit(
+                    f"⚠️ Erro ao voltar ao menu para ID {id_value}: {nav_error}"
+                )
+            return [[id_value, "", "", "", "", "", "", "", "", "", status]]
+
+        # 2. Clica em todos os serviços
+        serviços = page.locator('a[title="Serviços"]').all()
+        todos_dados = []
+
+        for servico_idx, servico in enumerate(serviços):
+            medicao = page.get_by_text("Medição", exact=True)
+            medicao.wait_for(state="visible", timeout=60000)
+            medicao.click(timeout=5000)
+
             servico.click()
 
             # 3. Tenta encontrar "Memória de Cálculo"
@@ -632,7 +822,9 @@ class WebScraperWorker(QThread):
                 elif self.mode == 3:
                     self._scrap_id_cancelado(page, df)
                 elif self.mode == 4:
-                    self._scrap_memoria_calculo_main(page, df)
+                    self._pesquisar_memoria_calculo_draft(page, df)
+                elif self.mode == 5:
+                    self._pesquisar_id_memoria_calculo_medicao(page, df)
 
                 browser.close()
                 self.message.emit("✅ Processo concluído!")
@@ -865,13 +1057,13 @@ class WebScraperWorker(QThread):
 
         self.message.emit(f"✅ Arquivo final salvo: {arquivo}")
 
-    def _scrap_memoria_calculo_main(self, page, df):
+    def _pesquisar_memoria_calculo_draft(self, page, df):
         """Função principal que processa todos os IDs da memória de cálculo"""
         self.message.emit("🧮 Iniciando extração de Memória de Cálculo...")
 
         # Cria arquivo com timestamp
         timestamp = datetime.now().strftime("%d-%m-%Y_%Hh%Mm%Ss")
-        arquivo = self.download_path / f"osp_memoria_calculo_{timestamp}.xlsx"
+        arquivo = self.download_path / f"osp_memoria_calculo_draft_{timestamp}.xlsx"
 
         # Define colunas
         colunas = [
@@ -906,7 +1098,82 @@ class WebScraperWorker(QThread):
             while self._running:
                 try:
                     # Chama a função de extração
-                    dados_id = self._scrap_memoria_calculo(page, id_value)
+                    dados_id = self._scrap_memoria_calculo_draft(page, id_value)
+
+                    # Adiciona à lista principal
+                    if dados_id:
+                        resultados.extend(dados_id)
+                        self.message.emit(
+                            f"✅ ID {id_value}: Adicionou {len(dados_id)} linhas"
+                        )
+                    else:
+                        # Adiciona linha vazia para manter o ID
+                        resultados.append([id_value] + [""] * 10)
+                        self.message.emit(f"⚠️ ID {id_value}: Nenhum dado encontrado")
+                    break  # Sucesso
+                except Exception as e:
+                    self.message.emit(
+                        f"❌ Erro no ID {id_value}: {str(e)}. Tentando novamente..."
+                    )
+                    self._recover_page_state(page)
+
+            # Salva incrementalmente
+            try:
+                if resultados:
+                    df_temp = pd.DataFrame(resultados, columns=colunas)
+                    df_temp.to_excel(arquivo, index=False)
+                    self.data_saved.emit(str(arquivo))
+            except Exception as e:
+                self.message.emit(f"⚠️ Erro ao salvar: {e}")
+
+        # Finaliza
+        self.message.emit(f"✅ Processo concluído! Total: {len(resultados)} linhas")
+        self.message.emit(f"💾 Arquivo salvo: {arquivo}")
+
+        return resultados
+
+    def _pesquisar_id_memoria_calculo_medicao(self, page, df):
+        """Função principal que processa todos os IDs da memória de cálculo"""
+        self.message.emit("🧮 Iniciando extração de Memória de Cálculo...")
+
+        # Cria arquivo com timestamp
+        timestamp = datetime.now().strftime("%d-%m-%Y_%Hh%Mm%Ss")
+        arquivo = self.download_path / f"osp_memoria_calculo_medicao_{timestamp}.xlsx"
+
+        # Define colunas
+        colunas = [
+            "ID",
+            "CLASSE",
+            "CODIGO",
+            "DESCRIÇÃO DO SERVIÇO",
+            "UNIDADE",
+            "PONTOS",
+            "CUSTO UNITÁRIO (R$)",
+            "QUANTIDADE EXECUTADA",
+            "PONTOS TOTAIS",
+            "CUSTO TOTAL (R$)",
+            "STATUS",
+        ]
+
+        # Lista para todos os resultados
+        resultados = []
+        total_ids = len(df)
+
+        for idx, row in df.iterrows():
+            if not self._running:
+                break
+
+            id_value = int(row["ID"])
+            progress = int((idx + 1) / total_ids * 100)
+            self.progress.emit(progress)
+            self.message.emit(
+                f"🔍 Processando ID {id_value} ({idx + 1}/{total_ids})..."
+            )
+
+            while self._running:
+                try:
+                    # Chama a função de extração
+                    dados_id = self._scrap_memoria_calculo_medicao(page, id_value)
 
                     # Adiciona à lista principal
                     if dados_id:
@@ -1545,7 +1812,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title_label)
 
         # Versão
-        version_label = QLabel("v1.0.1")
+        version_label = QLabel("Versão: v1.1.1")
         version_label.setStyleSheet("font-size: 11px; color: gray; padding: 5px;")
         version_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
@@ -1620,16 +1887,22 @@ class MainWindow(QMainWindow):
         self.mode_draft.setChecked(True)
         self.mode_medicao = QRadioButton("📊 Medição")
         self.mode_cancelados = QRadioButton("🔎 ID Cancelados")
-        self.mode_memoria = QRadioButton("🧮 Memória de Cálculo")
+        self.mode_memoria_draft = QRadioButton("🧮 Memória de Cálculo Draft")
+        self.mode_memoria_medicao = QRadioButton("🧮 Memória de Cálculo Medição")
 
         mode_layout.addWidget(self.mode_draft)
         mode_layout.addWidget(self.mode_medicao)
         mode_layout.addWidget(self.mode_cancelados)
-        mode_layout.addWidget(self.mode_memoria)
+        mode_layout.addWidget(self.mode_memoria_draft)
+        mode_layout.addWidget(self.mode_memoria_medicao)
 
         # Tooltip explicativo para Memória de Cálculo
-        self.mode_memoria.setToolTip(
-            "Extrai tabela específica de memória de cálculo com:\n- Classe, Código, Descrição\n- Pontos, Custos Unitário e Total\n- Quantidade Executada"
+        self.mode_memoria_draft.setToolTip(
+            "Extrai tabela específica de memória de cálculo draft com:\n- Classe, Código, Descrição\n- Pontos, Custos Unitário e Total\n- Quantidade Executada"
+        )
+
+        self.mode_memoria_medicao.setToolTip(
+            "Extrai tabela específica de memória de cálculo medição com:\n- Classe, Código, Descrição\n- Pontos, Custos Unitário e Total\n- Quantidade Executada"
         )
 
         mode_group.setLayout(mode_layout)
@@ -1794,8 +2067,10 @@ class MainWindow(QMainWindow):
             return 2
         elif self.mode_cancelados.isChecked():
             return 3
-        elif self.mode_memoria.isChecked():
+        elif self.mode_memoria_draft.isChecked():
             return 4
+        elif self.mode_memoria_medicao.isChecked():
+            return 5
         return 1
 
     def start_scraping(self):
@@ -1805,7 +2080,7 @@ class MainWindow(QMainWindow):
             return
 
         # Aviso especial para Memória de Cálculo
-        if self.mode_memoria.isChecked():
+        if self.mode_memoria_draft.isChecked():
             reply = QMessageBox.information(
                 self,
                 "Modo Memória de Cálculo",
@@ -1878,7 +2153,8 @@ class MainWindow(QMainWindow):
             1: "Draft",
             2: "Medição",
             3: "ID Cancelados",
-            4: "Memória de Cálculo",
+            4: "Memória de Cálculo draft",
+            5: "Memória de Cálculo medição",
         }
         self.log_message(f"🚀 Iniciando extração de {mode_text[self.worker.mode]}...")
 
