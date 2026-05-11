@@ -383,9 +383,9 @@ class WebScraperWorker(QThread):
             page.locator("span.badge.bg-primary:has-text('Editar')").click(
                 timeout=10000
             )
-            medicao = page.get_by_text("Medição", exact=True)
-            medicao.wait_for(state="visible", timeout=60000)
-            medicao.click(timeout=5000)
+            # medicao = page.get_by_text("Medição", exact=True)
+            # medicao.wait_for(state="visible", timeout=60000)
+            # medicao.click(timeout=5000)
 
             page.wait_for_selector('a[title="Serviços"]', timeout=15000)
 
@@ -409,11 +409,11 @@ class WebScraperWorker(QThread):
         serviços = page.locator('a[title="Serviços"]').all()
         todos_dados = []
 
-        for servico_idx, servico in enumerate(serviços):
-            medicao = page.get_by_text("Medição", exact=True)
-            medicao.wait_for(state="visible", timeout=60000)
-            medicao.click(timeout=5000)
+        medicao = page.get_by_text("Medição", exact=True)
+        medicao.wait_for(state="visible", timeout=60000)
+        medicao.click(timeout=5000)
 
+        for servico_idx, servico in enumerate(serviços):
             servico.click()
 
             # 3. Tenta encontrar "Memória de Cálculo"
@@ -543,6 +543,10 @@ class WebScraperWorker(QThread):
             if len(serviços) > 1 and servico_idx < len(serviços) - 1:
                 page.go_back()
                 page.wait_for_load_state("networkidle", timeout=15000)
+
+                medicao = page.get_by_text("Medição", exact=True)
+                medicao.wait_for(state="visible", timeout=60000)
+                medicao.click(timeout=5000)
 
         # 10. VOLTA AO MENU PRINCIPAL
         page.click('//*[@id="ott-sidebar-collapse"]')
@@ -1812,7 +1816,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title_label)
 
         # Versão
-        version_label = QLabel("Versão: v1.1.1")
+        version_label = QLabel("Versão: v1.1.2")
         version_label.setStyleSheet("font-size: 11px; color: gray; padding: 5px;")
         version_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
